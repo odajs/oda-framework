@@ -48,7 +48,7 @@ For questions and support please use [the official forum](http://forum.odajs.org
 
 Please make sure to read the [Issue Reporting Checklist](https://github.com/odajs/oda-framework/blob/dev/.github/CONTRIBUTING.md#issue-reporting-guidelines) before opening an issue. Issues not conforming to the guidelines may be closed immediately.
 
-### Good First Issues
+## Good First Issues
 
 To help you get your feet wet and get you familiar with our contribution process, we have a list of [good first issues](https://github.com/odajs/oda-framework/labels/good%20first%20issue) that contain bugs which have a relatively limited scope. This is a great place to get started.
 
