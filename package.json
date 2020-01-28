@@ -28,7 +28,6 @@
     "index.js",
     "oda/"    
   ],
-  "hom
   "license": "MIT",
   "main": "index.js",
   "name": "oda-framework",
