@@ -70,7 +70,14 @@ export default function ODA(prototype = {}) {
                 }
                 const doc = domParser.parseFromString(`<template>${template || ''}</template>`, 'text/html');
                 template = doc.querySelector('template');
-                prototype.slots = Array.prototype.map.call(template.content.querySelectorAll('slot[name]'), el=>el.getAttribute('name'));
+                const namedSlots = template.content.querySelectorAll('slot[name]');
+                for (let slot of namedSlots){
+                    for (let ch of slot.children){
+                        if (ch.attributes['slot']) continue;
+                        ch.setAttribute('slot', slot.name);
+                    }
+                }
+                prototype.slots = Array.prototype.map.call(namedSlots, el=>el.getAttribute('name'));
                 if (ODA.style){
                     const styles = Array.prototype.filter.call(template.content.children, i=>i.localName === 'style');
                     const rules = {};
@@ -177,6 +184,7 @@ export default function ODA(prototype = {}) {
         core.observers[key].push(h);
     }
     const core = {
+        slotRefs: {},
         reflects: [],
         observers: {},
         listeners: {},
@@ -192,7 +200,7 @@ export default function ODA(prototype = {}) {
                 if (!entry.target.$freeze)
                     requestAnimationFrame(entry.target.render.bind(entry.target));
             }
-        }, {rootMargin: '100%'})
+        }, {rootMargin: '20%'})
     };
     function callHook (hook) {
         this.fire(hook);
@@ -218,6 +226,11 @@ export default function ODA(prototype = {}) {
                 callHook.call(this, 'created');
                 ODA.telemetry.components[prototype.is].count++;
                 ODA.telemetry.components.count++;
+                for (let a of Array.prototype.filter.call(this.attributes, attr => attr.name.includes('.'))) {
+                    let val = a.value;
+                    val = (val === '') ? true : (val === undefined ? false : val);
+                    this.setProperty(a.name, val);
+                }
 
                 if(this.$core.shadowRoot){
                     componentResizeObserver.observe(this);
@@ -340,10 +353,12 @@ export default function ODA(prototype = {}) {
                 return this.$refs;
             }
             get $refs() {
-                if(!this.$core.refs){
-                    this.$core.refs = {};
-                    for (let el of this.$core.shadowRoot.querySelectorAll('[ref]')){
-                        let ref = el.getAttribute('ref');
+                if(!this.$core.refs || Object.keys(this.$core.refs).length === 0){
+                    this.$core.refs = Object.assign({}, this.$core.slotRefs);
+                    let els = this.$core.shadowRoot.querySelectorAll('*');
+                    els = Array.prototype.filter.call(els, i=>i.$ref);
+                    for (let el of els){
+                        let ref = el.$ref;
                         let arr = this.$core.refs[ref];
                         if (arr)
                             arr.push(el);
@@ -352,6 +367,7 @@ export default function ODA(prototype = {}) {
                         else
                             this.$core.refs[ref] = el;
                     }
+
                 }
                 return this.$core.refs;
             }
@@ -409,22 +425,6 @@ export default function ODA(prototype = {}) {
                 }
                 throw new Error(`Not found super method: "${name}" `);
             };
-            get domHost(){
-                if (this.$core.domHost === undefined){
-                    this.$core.domHost = (()=>{
-                        let p = this.parentNode;
-                        while (p  && !p.$core) {
-                            if (p.constructor.name === 'ShadowRoot')
-                                p = p.host;
-                            else
-                                p = p.parentNode;
-                        }
-                        this.$core.domHost = p;
-                        return p;
-                    })();
-                }
-                return this.$core.domHost;
-            }
         }
 
         for (let name in prototype.properties) {
@@ -825,6 +825,7 @@ function funcToAttribute(name){
 let sid = 0;
 class VNode{
     constructor(el, vars) {
+        this.cache = {};
         this.id = ++sid;
         this.vars = vars;
         el.$node = this;
@@ -835,6 +836,13 @@ class VNode{
         if (el.nodeName === 'svg' || (el.parentNode && el.parentNode.$node && el.parentNode.$node.svg))
             this.svg = true;
         this.listeners = {};
+    }
+    setCache(el){
+        this.cache[el.nodeName] = this.cache[el.nodeName] || [];
+        this.cache[el.nodeName].add(el);
+    }
+    getCache(tag){
+        return (this.cache[tag] || []).shift()
     }
 }
 function  translate(text, language){
@@ -881,10 +889,8 @@ function parseJSX(prototype, el, vars = []){
     else {
         for (const attr of el.attributes){
             let name = attr.name;
-            let modifiers = parseModifiers(name);
-            if (modifiers)
-                name = name.replace(modifierRE, '');
             let expr = attr.value;
+            let modifiers;
             if (prototype[expr])
                 expr+='()';
             if (/^(:|bind:)/.test(attr.name)){
@@ -974,7 +980,10 @@ function parseJSX(prototype, el, vars = []){
                 else
                     throw new Error('Unknown directive '+attr.name);
             }
-            else if (/^@/.test(attr.name)){
+            else if (/^@/.test(attr.name)) {
+                modifiers = parseModifiers(name);
+                if (modifiers)
+                    name = name.replace(modifierRE, '');
                 if (prototype[attr.value])
                     expr = attr.value + '($event, $detail)';
                 name = name.replace(/^@/g, '');
@@ -993,8 +1002,11 @@ function parseJSX(prototype, el, vars = []){
             }
             else if (name === 'is')
                 src.tag = expr.toUpperCase();
+            else if (name === 'ref'){
+                new Directive(src, name, "\'"+expr+"\'", vars);
+            }
             else{
-                src.attrs = src.attrs || {}
+                src.attrs = src.attrs || {};
                 src.attrs[name] =  expr;
             }
 
@@ -1035,7 +1047,7 @@ const tags = {
 };
 const directives = {
     ref($el, fn, p){
-        $el.setAttribute('ref', exec.call(this, fn, p));
+        $el.$ref = exec.call(this, fn, p);
     },
     // id($el, fn, p){
     //     $el.__ref = exec.call(this, fn, p);
@@ -1146,7 +1158,7 @@ function createElement(src, tag, old) {
                     $el.setAttribute(i, src.attrs[i]);
         }
         $el.$node = src;
-        $el.$host = this;
+        $el.domHost = this;
         for (const e in src.listeners || {})
             $el.addEventListener(e, src.listeners[e].bind(this));
     }
@@ -1184,6 +1196,7 @@ function  updateDom(src, $el, $parent, pars){
         else if($el.nodeName !== tag){
             const el = createElement.call(this, src, tag, $el);
             $parent.replaceChild(el, $el);
+            el.$ref =  $el.$ref;
             $el = el;
         }
     }
@@ -1234,28 +1247,48 @@ function  updateDom(src, $el, $parent, pars){
         }
     }
     if (!$el.slot || $el.slotProxy) return;
-    this.$core.io.unobserve($el);
-    const el = createElement.call(this, src, '#comment');
-    el.slotTarget = $el;
-    $el.slotProxy = el;
-    el.textContent += `-- ${$el.localName} (slot: "${$el.slot}")`;
-    $parent.replaceChild(el, $el);
-    let host;
-    for (host of this.$core.shadowRoot.querySelectorAll('*')){
-        if (host.$core && host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)){
-            host.appendChild($el);
-            return;
+    // requestAnimationFrame(()=>{
+        this.$core.io.unobserve($el);
+        const el = createElement.call(this, src, '#comment');
+        el.slotTarget = $el;
+        $el.slotProxy = el;
+        el.textContent += `-- ${$el.localName} (slot: "${$el.slot}")`;
+    
+        if ($el.$ref) {
+            let arr = this.$core.slotRefs[$el.$ref];
+            if (arr)
+                arr.push($el);
+            else if ($el.$for)
+                this.$core.slotRefs[$el.$ref] = [$el];
+            else
+                this.$core.slotRefs[$el.$ref] = $el;
         }
-    }
-    host = this;
-    while(host){
-        if (host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)){
-            host.appendChild($el);
-            return;
+        $parent.replaceChild(el, $el);
+        let host;
+        for (host of this.$core.shadowRoot.querySelectorAll('*')){
+            if (host.$core && host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)){
+                host.appendChild($el);
+                return;
+            }
         }
-        host = host.domHost;
-    }
-    this.appendChild($el);
+
+        host = this;
+        while(host){
+            for (let ch of host.children){
+                if (ch.$core && ch.$core.prototype.slots && ch.$core.prototype.slots.includes($el.slot)){
+                    ch.appendChild($el);
+                    return;
+                }
+            }
+            if (host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)){
+                host.appendChild($el);
+                return;
+            }
+            host = host.domHost;
+        }
+        this.appendChild($el);
+    // })
+
 }
 
 let renderQueue = [], rafID = 0 , limit = 30;
@@ -1299,6 +1332,7 @@ function exec (fn, p = []){
     }
     catch(e){
         console.error(e);
+        console.warn(fn.toString(), p, this);
     }
 }
 const forVars = ['item', 'index', 'items'];
@@ -1424,17 +1458,32 @@ const cache = {
 };
 ODA.loadURL = async function(url){
     if (!cache.fetch[url])
-        cache.fetch[url] = new Promise((responce, reject) => {
-            fetch(url).then(responce).catch(reject);
+        cache.fetch[url] = new Promise(async (resolve, reject) => {
+            try{
+                const a = (await fetch(url));
+                if (a.ok)
+                    resolve(a);
+                // else
+                //     throw new Error(a.statusText)
+            }
+            catch (e) {
+                reject(e);
+            }
+
         });
     return cache.fetch[url];
 };
 ODA.loadJSON = async function(url) {
     if (!cache.file[url]){
-        cache.file[url] = new Promise(async (res) => {
-            const file = await ODA.loadURL(url);
-            const text =  await file.json();
-            res(text)
+        cache.file[url] = new Promise(async (resolve, reject) => {
+            try{
+                const file = await ODA.loadURL(url);
+                const text =  await file.json();
+                resolve(text)
+            }
+            catch (e) {
+                reject(e)
+            }
         });
     }
     return cache.file[url];
@@ -1450,6 +1499,65 @@ ODA.loadHTML = async function(url) {
     }
     return cache.file[url];
 };
+class odaRouter{
+    constructor() {
+        this.rules = {};
+        this.root = window.location.pathname.replace(/(?<=\/)[a-zA-Z]+\.[a-zA-Z]+$/, '');
+        window.addEventListener('popstate', (e) => {
+            this.run((e.state && e.state.path) || '');
+        })
+    }
+    create(rule, callback){
+        for(let r of rule.split(',')){
+            r = r || '__empty__';
+            this.rules[r] = this.rules[r] || [];
+            if(!this.rules[r].includes(callback))
+                this.rules[r].push(callback);
+        }
+    }
+    set currentRoute(v){
+        this._current = v;
+    }
+    go(path, idx = 0){
+        if(path.startsWith('#')){
+            const hash = window.location.hash.split('#');
+            hash.unshift();
+            while (hash.length>idx+1){
+                hash.pop();
+            }
+            path = hash.join('#')+path;
+
+        }
+        window.history.pushState({path}, null, path);
+        this.run(path)
+    }
+    run(path){
+        rules:for (let rule in this.rules){
+            if(rule === '__empty__'){
+                if(path) continue;
+            }
+            else{
+                chars:for(let i = 0, char1, char2; i<rule.length; i++){
+                    char1 = rule[i];
+                    char2 = path[i];
+                    switch (char1) {
+                        case '*':
+                            break chars;
+                        case '?':
+                            if(char2 === undefined) continue rules;
+                            break;
+                        default:
+                            if(char1 !== char2) continue rules;
+                            break;
+                    }
+                }
+            }
+            for(let h of this.rules[rule])
+                h(path)
+        }
+    }
+}
+ODA.router = new odaRouter();
 const hooks = ['created', 'ready', 'attached', 'detached', 'updated', 'destroyed'];
 ODA.loadScript = async function (url) {
     return ODA.cache('load-script:' + url, ()=>{
@@ -1457,7 +1565,6 @@ ODA.loadScript = async function (url) {
             let script = document.createElement("script");
             script.onload = function (e) {
                 globalThis.loader && globalThis.loader.off();
-                // script.remove();
                 resolve(script);
             };
             script.onerror = function (e) {
@@ -1529,12 +1636,37 @@ function deepCopy(obj) {
 
 Node.prototype.setProperty = function (name, v) {
     if (this.__lockBind === name) return;
-    if (this.$core){
-        const prop = this.$core.prototype.properties[name];
-        if (prop){
-            this.$core.data[name] = v;
-            return;
+    if (this.$core) {
+        if (name.includes('.')) {
+            let path = name.split('.');
+            let step;
+            for (let i = 0; i < path.length; i++){
+                let key = path[i].toCamelCase();
+                if (i === 0) {
+                    const prop = this.$core.prototype.properties[key];
+                    if (prop) {
+                        step = this.$core.data[key] = this.$core.data[key] || {};
+                    }
+                    else break;
+                }
+                else if (isObject(step)) {
+                    if (i < path.length - 1) {
+                        step = step[key] = step[key] || {};
+                    } else {
+                        step[key] = v;
+                        return;
+                    }
+                }
+            }
         }
+        else {
+            const prop = this.$core.prototype.properties[name];
+            if (prop){
+                this.$core.data[name] = v;
+                return;
+            }
+        }
+
     }
     if (typeof v === 'object' || this.nodeType !== 1 || (this.$node && this.$node.vars.has(name))) {
         if (this.$core){
@@ -1565,7 +1697,7 @@ Node.prototype.setProperty = function (name, v) {
 
 Node.prototype.render = function () {
     if (this.$freeze || !this.$node) return;
-    updateDom.call(this.$host, this.$node, this,  this.parentNode, this.$for);
+    updateDom.call(this.domHost, this.$node, this,  this.parentNode, this.$for);
 };
 if (document.body) {
     load();
@@ -2297,6 +2429,7 @@ window.addEventListener('load', async () => {
                 --focused:{
                     background-color: whitesmoke !important;
                     color: var(--focused-color, red) !important;
+                    text-decoration: underline;
                     /*border-bottom: 1px solid var(--focused-color) !important;*/
                 };
                 --disabled: {
