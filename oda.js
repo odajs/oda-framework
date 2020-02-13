@@ -6,6 +6,7 @@
 
 window.globalThis = window.globalThis || window;
 'use strict';
+
 const domParser = new DOMParser();
 const regExpApply = /(?<=@apply\s+)--(\w+-?\w+)+/g;
 const regExpParseRule = /([a-z\-]+)\s*:\s*((?:[^;]*url\(.*?\)[^;]*|[^;]*)*)\s*(?:;|$)/gi;
@@ -184,6 +185,7 @@ export default function ODA(prototype = {}) {
         core.observers[key].push(h);
     }
     const core = {
+        cache:{},
         slotRefs: {},
         reflects: [],
         observers: {},
@@ -214,6 +216,7 @@ export default function ODA(prototype = {}) {
                 super();
                 this.$core = Object.assign({}, core);
                 this.$core.events = {};
+                this.$core.cache = {observers:{}};
                 this.$core.debounces = new Map();
                 this.properties = prototype.properties;
                 const data = deepCopy(core.data);
@@ -226,6 +229,13 @@ export default function ODA(prototype = {}) {
                 callHook.call(this, 'created');
                 ODA.telemetry.components[prototype.is].count++;
                 ODA.telemetry.components.count++;
+                if(prototype.hostAttributes){
+                    for (let a in prototype.hostAttributes) {
+                        let val = prototype.hostAttributes[a];
+                        val = (val === '') ? true : (val === undefined ? false : val);
+                        this.setProperty(a, val);
+                    }
+                }
                 for (let a of Array.prototype.filter.call(this.attributes, attr => attr.name.includes('.'))) {
                     let val = a.value;
                     val = (val === '') ? true : (val === undefined ? false : val);
@@ -292,10 +302,6 @@ export default function ODA(prototype = {}) {
                 if(!this.$core.shadowRoot || this.$core.__inRender) return;
                 this.$core.__inRender = true;
                 force?render.call(this, force):ODA.render(render.bind(this));
-
-                // if(this.$node && !this.slot)
-                //     ODA.render(super.render.bind(this));
-
             }
             resolveUrl(path){
                 return prototype.$path + path;
@@ -461,7 +467,9 @@ export default function ODA(prototype = {}) {
                 core.data[name] = val;
         }
         core.node.children = prototype.template?parseJSX(prototype, prototype.template):[];
+        let cnt = 0;
         for(let func of prototype.observers){
+            const obsId = ++cnt;
             let expr;
             if (typeof func === 'function') {
                 expr = func.toString();
@@ -490,8 +498,10 @@ export default function ODA(prototype = {}) {
                 const params = vars.map(v=>{
                     return this.$core.data[v.prop];
                 });
-                if (!params.includes(undefined))
+                if (!params.includes(undefined) && !Object.equal(this.$core.cache.observers[obsId], params)){
+                    this.$core.cache.observers[obsId] =  params;
                     func.call(this,  ...params);
+                }
             }
             for (const v of vars)
                 observe(v.prop, funcObserver);
@@ -711,10 +721,12 @@ export default function ODA(prototype = {}) {
 };
 const getDescriptor =  Object.getOwnPropertyDescriptor;
 window.ODA = ODA;
+
 try {
     ODA.rootPath = import.meta;
     ODA.rootPath = ODA.rootPath.url.replace('/oda.js','');
 } catch (e) { }
+
 function  signals(prop, value, old){
     if (prop.notify)
         this.dispatchEvent(new CustomEvent(prop.attrName+'-changed', {detail: {value, src: this}, bubbles: true, cancelable: true}));
@@ -724,6 +736,7 @@ function  signals(prop, value, old){
 
 function makeReactive(obj, props, old) {
     if (!isObject(obj)) return obj;
+
     let d = obj.__op__;
     let hosts = d && d.hosts;
     if (hosts){
@@ -875,10 +888,7 @@ function parseJSX(prototype, el, vars = []){
             });
         }
         else if (isStyle){
-            // if (ODA.style && ODA.style.localName !== prototype.is)
-            //     src.textContent = ODA.style.convert(src, value);
-            // else
-                src.textContent = value;
+           src.textContent = value;
         }
         else
             src.textContent = translate(value, src.language);
@@ -937,6 +947,7 @@ function parseJSX(prototype, el, vars = []){
                             }
                             exec.call(this, func, [res, ...(e.target.$for || [])]);
                         };
+                        src.listeners[name+'-changed'].notify = name;
                     }
                     const h = function(params){
                         return exec.call(this, fn, params);
@@ -1047,24 +1058,26 @@ const tags = {
 };
 const directives = {
     ref($el, fn, p){
-        $el.$ref = exec.call(this, fn, p);
+        const ref = exec.call(this, fn, p);
+        if ($el.$ref === ref) return;
+        $el.$ref = ref;
+        this.$core.$refs = null;
     },
-    // id($el, fn, p){
-    //     $el.__ref = exec.call(this, fn, p);
-    // },
     show($el, fn, p){
         $el.style.display = exec.call(this, fn, p)?'':'none';
     },
     html($el, fn, p){
-        $el.innerHTML = exec.call(this, fn, p) || '';
+        const html = exec.call(this, fn, p) || '';
+        if ($el.$cache.innerHTML === html) return;
+        $el.innerHTML = $el.$cache.innerHTML = html;
     },
     text($el, fn, p){
         let val = exec.call(this, fn, p);
         if (val === undefined)
             val = '';
-        val =  translate(val);
-        if ($el.textContent !== val)
-            $el.textContent = val;
+        if ($el.$cache.textContent === val) return;
+        $el.$cache.textContent = val;
+        $el.textContent = translate(val);
     },
     class($el, fn, p){
         let s = exec.call(this, fn, p) || '';
@@ -1157,6 +1170,7 @@ function createElement(src, tag, old) {
                 for (let i in src.attrs)
                     $el.setAttribute(i, src.attrs[i]);
         }
+        $el.$cache = {};
         $el.$node = src;
         $el.domHost = this;
         for (const e in src.listeners || {})
@@ -1233,8 +1247,26 @@ function  updateDom(src, $el, $parent, pars){
         for (let h of src.dirs)
             h.call(this, $el, src.fn[h.name], pars);
     if (src.bind)
-        for (let i in src.bind)
-            $el.setProperty(i, src.bind[i].call(this, pars));
+        for (let i in src.bind){
+            const b = src.bind[i].call(this, pars);
+            if (b === undefined && src.listeners[i+'-changed']){
+                requestAnimationFrame(()=>{
+                    $el.fire(i+'-changed');
+                });
+            }
+            else{
+                $el.setProperty(i, b);
+            }
+
+            // if(this.$node){
+            //     for(let event in this.$node.listeners){
+            //         if(this.$node.listeners[event].notify)
+            //             this.fire(event);
+            //         // this.$node.listeners[event].call(this)
+            //     }
+            // }
+        }
+
     if ($el.$core)
         for (let i in $el.$core.style || {})
             $el.style[i] = $el.$core.style[i];
@@ -1247,23 +1279,25 @@ function  updateDom(src, $el, $parent, pars){
         }
     }
     if (!$el.slot || $el.slotProxy) return;
-    // requestAnimationFrame(()=>{
-        this.$core.io.unobserve($el);
-        const el = createElement.call(this, src, '#comment');
-        el.slotTarget = $el;
-        $el.slotProxy = el;
-        el.textContent += `-- ${$el.localName} (slot: "${$el.slot}")`;
-    
-        if ($el.$ref) {
-            let arr = this.$core.slotRefs[$el.$ref];
-            if (arr)
-                arr.push($el);
-            else if ($el.$for)
-                this.$core.slotRefs[$el.$ref] = [$el];
-            else
-                this.$core.slotRefs[$el.$ref] = $el;
-        }
-        $parent.replaceChild(el, $el);
+
+    this.$core.io.unobserve($el);
+    const el = createElement.call(this, src, '#comment');
+    el.slotTarget = $el;
+    $el.slotProxy = el;
+    el.textContent += `-- ${$el.localName} (slot: "${$el.slot}")`;
+
+    if ($el.$ref) {
+        let arr = this.$core.slotRefs[$el.$ref];
+        if (arr)
+            arr.push($el);
+        else if ($el.$for)
+            this.$core.slotRefs[$el.$ref] = [$el];
+        else
+            this.$core.slotRefs[$el.$ref] = $el;
+    }
+    $parent.replaceChild(el, $el);
+
+    requestAnimationFrame(()=>{
         let host;
         for (host of this.$core.shadowRoot.querySelectorAll('*')){
             if (host.$core && host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)){
@@ -1287,7 +1321,7 @@ function  updateDom(src, $el, $parent, pars){
             host = host.domHost;
         }
         this.appendChild($el);
-    // })
+    })
 
 }
 
@@ -1458,19 +1492,7 @@ const cache = {
 };
 ODA.loadURL = async function(url){
     if (!cache.fetch[url])
-        cache.fetch[url] = new Promise(async (resolve, reject) => {
-            try{
-                const a = (await fetch(url));
-                if (a.ok)
-                    resolve(a);
-                // else
-                //     throw new Error(a.statusText)
-            }
-            catch (e) {
-                reject(e);
-            }
-
-        });
+        cache.fetch[url] = fetch(url);
     return cache.fetch[url];
 };
 ODA.loadJSON = async function(url) {
@@ -1555,6 +1577,9 @@ class odaRouter{
             for(let h of this.rules[rule])
                 h(path)
         }
+    }
+    back(){
+        window.history.back();
     }
 }
 ODA.router = new odaRouter();
@@ -1680,7 +1705,8 @@ Node.prototype.setProperty = function (name, v) {
         if (!d)
             name = name.toKebabCase();
         else if (d.set && v !== undefined){
-            this[name] = v;
+            if (this[name] !== v)
+                this[name] = v;
             return;
         }
         if (v === false || v === undefined || v === null || v === '')
@@ -2128,6 +2154,7 @@ window.addEventListener('load', async () => {
         
                 --content:{
                     background-color: var(--content-background, white);
+                    color: var(--content-color, black);
                 };
                 --font-150:{
                     font-size: 150%;
@@ -2223,18 +2250,18 @@ window.addEventListener('load', async () => {
                     background-color: rgba(0,0,0,.1);
                     z-index: 1000;
                 };
-        
-            }
+                --user-select:{
+                    user-select: text !important;
+                }
+            };
             ::-webkit-scrollbar {
                 width: 12px;
                 height: 12px;
             }
-        
             ::-webkit-scrollbar-track {
                 -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,0.3);
         
             }
-        
             ::-webkit-scrollbar-thumb {
                 border-radius: 10px;
                 background: var(--body-background);
@@ -2274,9 +2301,6 @@ window.addEventListener('load', async () => {
                 flex-direction: column;
                 font-family: var(--font-family);
                 user-select: none;
-                -webkit-user-select: none;
-                -moz-user-select: none;
-                -ms-user-select: none;
                 margin: 0px;
                 padding: 0px;
                 height: 100%;
@@ -2298,41 +2322,6 @@ window.addEventListener('load', async () => {
                     transition: box-shadow 0.28s cubic-bezier(0.4, 0, 0.2, 1);
                 };
         
-                --shadow-elevation-2dp: {
-                    box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.14),
-                    0 1px 5px 0 rgba(0, 0, 0, 0.12),
-                    0 3px 1px -2px rgba(0, 0, 0, 0.2);
-                };
-        
-                --shadow-elevation-3dp: {
-                    box-shadow: 0 3px 4px 0 rgba(0, 0, 0, 0.14),
-                    0 1px 8px 0 rgba(0, 0, 0, 0.12),
-                    0 3px 3px -2px rgba(0, 0, 0, 0.4);
-                };
-        
-                --shadow-elevation-4dp: {
-                    box-shadow: 0 4px 5px 0 rgba(0, 0, 0, 0.14),
-                    0 1px 10px 0 rgba(0, 0, 0, 0.12),
-                    0 2px 4px -1px rgba(0, 0, 0, 0.4);
-                };
-        
-                --shadow-elevation-6dp: {
-                    box-shadow: 0 6px 10px 0 rgba(0, 0, 0, 0.14),
-                    0 1px 18px 0 rgba(0, 0, 0, 0.12),
-                    0 3px 5px -1px rgba(0, 0, 0, 0.4);
-                };
-        
-                --shadow-elevation-8dp: {
-                    box-shadow: 0 8px 10px 1px rgba(0, 0, 0, 0.14),
-                    0 3px 14px 2px rgba(0, 0, 0, 0.12),
-                    0 5px 5px -3px rgba(0, 0, 0, 0.4);
-                };
-        
-                --shadow-elevation-16dp: {
-                    box-shadow: 0 16px 24px 2px rgba(0, 0, 0, 0.14),
-                    0 6px 30px 5px rgba(0, 0, 0, 0.12),
-                    0 8px 10px -5px rgba(0, 0, 0, 0.4);
-                };
                 --text-shadow: {
                     text-shadow: 0 1px 1px rgba(255, 255, 255, 0.75);
                 };
@@ -2584,5 +2573,6 @@ window.addEventListener('load', async () => {
     });
     ODA.style = document.createElement('oda-style');
     document.dispatchEvent(new Event('framework-ready'));
+    import('./tools/tester/tester.js')
     // console.log("%cODA framework is ready...", `color: magenta; font-weight: bold; font-size: 16px`);
 });
