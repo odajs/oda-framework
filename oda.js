@@ -91,7 +91,7 @@ export default function ODA(prototype = {}) {
                         }
                         style.textContent = text;
                         document.head.appendChild(style);
-                        if (style.sheet.cssRules.length){
+                        if (style.sheet.cssRules.length && !/\{\{.*\}\}/g.test(style.textContent)){
                             cssRuleParse(style.sheet.cssRules, rules);
                             style.remove();
                         }
@@ -631,10 +631,14 @@ export default function ODA(prototype = {}) {
         prototype.listeners = prototype.listeners || {};
         if (prototype.keyBindings){
             prototype.listeners.keydown = function (e) {
+                const e_key = e.key.toLowerCase();
+                const e_code = e.code.toLowerCase();
                 const key = Object.keys(prototype.keyBindings).find(key=>{
                     return key.toLowerCase().split(',').some(v=>{
-                        return v.split('+').every(k=>{
-                            switch (k.trim()) {
+                        return v.split('+').every(s=>{
+                            if(!s) return false;
+                            const k = s.trim() || ' ';
+                            switch (k) {
                                 case 'ctrl':
                                     return e.ctrlKey;
                                 case 'shift':
@@ -642,7 +646,7 @@ export default function ODA(prototype = {}) {
                                 case 'alt':
                                     return e.altKey;
                                 default:
-                                    return k === e.key.toLowerCase();
+                                    return k === e_key || k === e_code ||`key${k}` === e_code;
                             }
                         })
                     });
