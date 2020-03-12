@@ -1,7 +1,7 @@
 /*
  * oda.js v3.0
  * (c) 2019-2020 Roman Perepelkin
- * Under the MIT License.
+ * Released under the MIT License.
  */
 
 window.globalThis = window.globalThis || window;
