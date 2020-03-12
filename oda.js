@@ -1,29 +1,48 @@
 /*
  * oda.js v3.0
- * (c) 2019-2020 Roman Perepelkin
- * Released under the MIT License.
+ * (c) 2019-2020 R.A. Perepelkin
+ * Under the MIT License.
  */
-
 window.globalThis = window.globalThis || window;
 'use strict';
-
 const domParser = new DOMParser();
-const regExpApply = /(?<=@apply\s+)--(\w+-?\w+)+/g;
+const regExpApply = /(?:@apply\s+)(--\w+-?\w+)+/g;
 const regExpParseRule = /([a-z\-]+)\s*:\s*((?:[^;]*url\(.*?\)[^;]*|[^;]*)*)\s*(?:;|$)/gi;
+function applyStyleMixins(styleText, styles) {
+    let matches = styleText.match(regExpApply);
+    if(matches){
+        matches = matches.map(m => m.replace(/@apply\s*/, ''));
+        for (let v of matches) {
+            const rule = styles[v];
+            styleText = styleText.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
+        }
+    }
+    return styleText;
+}
+function getStylesMyxins(cssRule, styles = {}){
+    const style = cssRule.style;
+    if(style){
+        Array.from(style).filter(s => s.startsWith('--')).forEach(s => {
+            const css = getComputedStyle(document.documentElement).getPropertyValue(s);
+            styles[s] = applyStyleMixins(css.replace(/{|}/g, '').trim(), ODA.style && ODA.style.styles || styles);
+        });
+    }
+    return styles;
+}
 function cssRuleParse(rules, res) {
     for (let rule of rules){
-        if (rule.styleMap){
-            const ss = rule.cssText.replace(rule.selectorText, '').match(regExpParseRule);
-            if (!ss) continue;
-            let sel = rule.selectorText.split(',').join(',\r');
-            let r = res[sel] = res[sel] || [];
-            r.add(...ss);
-        }
-        else if(rule.media){
+       if(rule.media){
             let key = '@media '+rule.media.mediaText;
             let r = res[key] = res[key] || {};
             cssRuleParse(rule.cssRules, r);
         }
+       else if(rule.cssText) {
+           const ss = rule.cssText.replace(rule.selectorText, '').match(regExpParseRule);
+           if (!ss) continue;
+           let sel = rule.selectorText.split(',').join(',\r');
+           let r = res[sel] = res[sel] || [];
+           r.add(...ss);
+       }
     }
 }
 function isObject(obj){
@@ -54,7 +73,7 @@ export default function ODA(prototype = {}) {
                         ODA.error(prototype.is,`not found inherit parent "${ext}"`);
                     return parent;
                 });
-                let template = prototype.template;
+                let template = prototype.template || '';
                 if (parents.length){
                     let templateExt = '';
                     for (let parent of parents){
@@ -83,13 +102,8 @@ export default function ODA(prototype = {}) {
                     const styles = Array.prototype.filter.call(template.content.children, i=>i.localName === 'style');
                     const rules = {};
                     for (let style of styles){
-                        let text = style.textContent;
-                        for (let v of (text.match(regExpApply) || [])){
-                            let rule =  ODA.style.styles[v];
-                            if(!rule) continue;
-                            text = text.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
-                        }
-                        style.textContent = text;
+                        const text = style.textContent;
+                        style.textContent = applyStyleMixins(text, ODA.style.styles);
                         document.head.appendChild(style);
                         if (style.sheet.cssRules.length && !/\{\{.*\}\}/g.test(style.textContent)){
                             cssRuleParse(style.sheet.cssRules, rules);
@@ -175,7 +189,7 @@ export default function ODA(prototype = {}) {
         }
     }
 
-    const componentResizeObserver = new ResizeObserver(entries=>{
+    const componentResizeObserver = window.ResizeObserver && new ResizeObserver(entries=>{
         for (const obs of entries){
             obs.target.fire('resize');
         }
@@ -245,7 +259,7 @@ export default function ODA(prototype = {}) {
                 }
 
                 if(this.$core.shadowRoot){
-                    componentResizeObserver.observe(this);
+                    componentResizeObserver && componentResizeObserver.observe(this);
                     window.addEventListener('resize', e =>{
                         this.fire('resize', e)
                     });
@@ -388,7 +402,7 @@ export default function ODA(prototype = {}) {
                 return this.$core.refs;
             }
             async (handler, delay = 0){
-                delay?setTimeout(handler, delay):requestIdleCallback(handler)
+                delay?setTimeout(handler, delay):requestAnimationFrame(handler)
             }
             __read (path, def){
                 this.setting  =  this.setting || JSON.parse(localStorage.getItem(prototype.is));
@@ -416,7 +430,13 @@ export default function ODA(prototype = {}) {
                     localStorage.setItem(prototype.is, JSON.stringify(this.setting));
                 }
             }
-            $super  (name, ...args) {
+            $super  (parentName, name, ...args) {
+                if (parentName && ODA.telemetry.components[parentName]) {
+                    const proto = ODA.telemetry.components[parentName].prototype;
+                    const method = (proto.methods && proto.methods[name]) || proto[name];
+                    return method.call(this, ...args);
+                }
+
                 const getIds = (p) => {
                     const res = [];
                     let id = p.extends;
@@ -1181,15 +1201,18 @@ function createElement(src, tag, old) {
             $el = document.createComment((src.textContent || src.id) + (old?(': '+old.tagName):''));
         else if (tag === '#text')
             $el = document.createTextNode(src.textContent||'');
-        else if (src.svg)
-            $el = document.createElementNS(svgNS, tag.toLowerCase());
+
         else{
-            $el = document.createElement(tag);
+            if (src.svg)
+                $el = document.createElementNS(svgNS, tag.toLowerCase());
+            else
+                $el = document.createElement(tag);
             if (tag !== 'STYLE')
                 this.$core.io.observe($el);
             if (src.attrs)
                 for (let i in src.attrs)
                     $el.setAttribute(i, src.attrs[i]);
+
         }
         $el.$cache = {};
         $el.$node = src;
@@ -1238,7 +1261,7 @@ function  updateDom(src, $el, $parent, pars){
 
     $el.$for = pars;
 
-    if (!$el.$freeze && $el.children){
+    if ($el.children && (!$el.$freeze || src.svg)){
         for (let i = 0, idx = 0, l = src.children.length; i<l; i++){
             let h = src.children[i];
             if (typeof h === "function"){
@@ -1278,14 +1301,6 @@ function  updateDom(src, $el, $parent, pars){
             else{
                 $el.setProperty(i, b);
             }
-
-            // if(this.$node){
-            //     for(let event in this.$node.listeners){
-            //         if(this.$node.listeners[event].notify)
-            //             this.fire(event);
-            //         // this.$node.listeners[event].call(this)
-            //     }
-            // }
         }
 
     if ($el.$core)
@@ -1560,7 +1575,7 @@ ODA.loadHTML = async function(url) {
 class odaRouter{
     constructor() {
         this.rules = {};
-        this.root = window.location.pathname.replace(/(?<=\/)[a-zA-Z]+\.[a-zA-Z]+$/, '');
+        this.root = window.location.pathname.replace(/\/[a-zA-Z]+\.[a-zA-Z]+$/, '/');
         window.addEventListener('popstate', (e) => {
             this.run((e.state && e.state.path) || '');
         })
@@ -2184,7 +2199,7 @@ window.addEventListener('load', async () => {
                 --section-background: lightgrey;
                 --section-color: black;
         
-                --layout-background: white;
+                --layout-background: whitesmoke;
                 --layout-color: black;
         
                 --content:{
@@ -2246,7 +2261,11 @@ window.addEventListener('load', async () => {
                     background: var(--header-background);
                     color: var(--header-color);
                     fill: var(--header-color);
-                    /*filter: brightness(.90);*/
+                };
+                --layout: {
+                    background: var(--layout-background);
+                    color: var(--layout-color);
+                    fill: var(--layout-color);
                 };
                 --footer: {
                     @apply --header;
@@ -2551,11 +2570,14 @@ window.addEventListener('load', async () => {
             for (let style of this.elements){
                 document.head.appendChild(style);
                 for (let i of style.sheet.cssRules) {
-                    (i.styleMap || []).forEach((val, key)=>{
-                        if (!/^--/.test(key)) return;
-                        val = val.toString().trim().replace(/^{|}$/g, '').trim().split(';').join(';');
-                        styles[key] = val;
-                    });
+                    if(i.style){
+                        for(let key of i.style){
+                            let val = i.style.getPropertyValue(key);
+                            if (!/^--/.test(key)) continue;
+                            val = val.toString().trim().replace(/^{|}$/g, '').trim().split(';').join(';');
+                            styles[key] = val;
+                        }
+                    }
                 }
             }
             const proxy = new Proxy(styles, {
@@ -2565,10 +2587,12 @@ window.addEventListener('load', async () => {
                         let theme = this.$core.data.theme[p];
                         if (theme)
                             return theme;
-                        for (let v of (val.match(regExpApply) || [])){
-                            let rule = this.$core.data.styles[v];
-                            val = val.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
-                        }
+
+                        applyStyleMixins(val, this.$core.data.styles);
+                        // for (let v of (val.match(regExpApply) || [])){
+                        //     let rule = this.$core.data.styles[v];
+                        //     val = val.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
+                        // }
                     }
                     return val;
                 },
@@ -2592,11 +2616,12 @@ window.addEventListener('load', async () => {
             this.$core.data.nodes.add(node);
             let res = node.style;
             if (!res) return res;
-            for (let v of (res.match(regExpApply) || [])){
-                let rule = this.$core.data.styles[v];
-                if(rule)
-                    res = res.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
-            }
+            applyStyleMixins(res, this.$core.data.styles);
+            // for (let v of (res.match(regExpApply) || [])){
+            //     let rule = this.$core.data.styles[v];
+            //     if(rule)
+            //         res = res.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
+            // }
             return res;
         },
         update(updates = {}){
@@ -2608,7 +2633,7 @@ window.addEventListener('load', async () => {
     });
     ODA.style = document.createElement('oda-style');
     document.dispatchEvent(new Event('framework-ready'));
-    if (document.body.firstElementChild.tagName === 'ODA-TESTER')
+    if (document.body.firstElementChild && document.body.firstElementChild.tagName === 'ODA-TESTER')
         import('./tools/tester/tester.js');
 
 });
