@@ -213,9 +213,9 @@ export default function ODA(prototype = {}) {
         io: new IntersectionObserver(entries => {
             for (let i = 0, entry, l = entries.length; i<l ;i++){
                 entry = entries[i];
-                if (!!entry.target.$freeze !== entry.isIntersecting) continue;
-                entry.target.$freeze = !entry.isIntersecting;
-                if (!entry.target.$freeze)
+                if (!!entry.target.$sleep !== entry.isIntersecting) continue;
+                entry.target.$sleep = !entry.isIntersecting;
+                if (!entry.target.$sleep)
                     requestAnimationFrame(entry.target.render.bind(entry.target));
             }
         }, {rootMargin: '20%'})
@@ -1087,10 +1087,13 @@ const tags = {
     }
 };
 const directives = {
+    wake($el, fn, p){
+        const key = exec.call(this, fn, p);
+        $el.$wake = key;
+    },
     'save-key'($el, fn, p){
         const key = exec.call(this, fn, p);
         $el.setProperty('saveKey', key);
-
     },
     props($el, fn, p){
         const props = exec.call(this, fn, p);
@@ -1149,6 +1152,7 @@ const directives = {
 };
 class Directive {
     constructor(src, name, expr, vars){
+        expr = expr || 'true';
         src.fn[name] = func(vars.join(','), expr);
         src.fn[name].expr = expr;
         src.dirs = src.dirs || [];
@@ -1258,10 +1262,10 @@ function  updateDom(src, $el, $parent, pars){
             $el = el;
         }
     }
-
+    $el.$wake = $el.$wake || this.$wake;
     $el.$for = pars;
 
-    if ($el.children && (!$el.$freeze || src.svg)){
+    if ($el.children && (!$el.$sleep || $el.$wake || src.svg)){
         for (let i = 0, idx = 0, l = src.children.length; i<l; i++){
             let h = src.children[i];
             if (typeof h === "function"){
@@ -1773,7 +1777,7 @@ Node.prototype.setProperty = function (name, v) {
 };
 
 Node.prototype.render = function () {
-    if (this.$freeze || !this.$node) return;
+    if (!this.$wake && (this.$sleep || !this.$node)) return;
     updateDom.call(this.domHost, this.$node, this,  this.parentNode, this.$for);
 };
 if (document.body) {
