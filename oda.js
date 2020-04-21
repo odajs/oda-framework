@@ -792,8 +792,11 @@ function makeReactive(obj, props, old) {
     let hosts = d && d.hosts;
     if (hosts){
         const val = hosts.get(this);
-        if (val)
-            return  val;
+        if (val){
+            if(val === obj || Array.isArray(obj))
+                return  val;
+            return  obj; //исправление для unshift и splice;
+        }
         obj = obj.__op__.obj;
     }
     else {
@@ -821,7 +824,7 @@ function makeReactive(obj, props, old) {
             const prop = props && props[key];
             if (prop){
                 if (prop.computed) {
-                    if (!val){
+                    if (!val || this.$core.deps[key] === undefined){
                         const before = this.$core.target;
                         this.$core.target = key;
                         val = prop.computed.call(this);
@@ -857,7 +860,9 @@ function makeReactive(obj, props, old) {
                 if (old === value) return true;
             }
             target[key] = value;
-            for (let host of target.__op__.hosts.keys()){
+            for (let map of target.__op__.hosts){
+                const host = map[0];
+                const val = map[1];
                 host.notify(key/*, value === undefined*/);
                 prop && signals.call(host, prop, value, old);
             }
@@ -1035,6 +1040,7 @@ function parseJSX(prototype, el, vars = []){
                 src.listeners[name] = function (e){
                     modifiers && modifiers.stop && e.stopPropagation();
                     modifiers && modifiers.prevent && e.preventDefault();
+                    modifiers && modifiers.immediate && e.stopImmediatePropagation();                    
                     if(typeof handler === 'function')
                         handler.call(this, e, e.detail);
                     else
