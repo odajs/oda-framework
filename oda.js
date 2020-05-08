@@ -2566,7 +2566,9 @@ window.addEventListener('load', async () => {
                 set(n, o){
                     for(let node of this.$core.data.nodes)
                         node.textContent = this.convert(node);
-                    document.querySelector('style[group=theme]').textContent = `\n:root{\n${Object.keys(n).map(key => '\t'+key+': '+n[key]+';\n').join('')}}`
+                    document.querySelector('style[group=theme]').textContent = `\n:root{\n${Object.keys(n).map(key => '\t'+key+': '+n[key]+';\n').join('')}}`;
+                    let event =  new CustomEvent('setTheme', {detail: {value: document.querySelector('style[group=theme]').textContent}, composed: true});
+                    document.dispatchEvent(event);
                 }
             },
             nodes:{
