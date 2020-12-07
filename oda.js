@@ -1620,7 +1620,7 @@ if (!window.ODA) {
                 el.render && el.render();
             }
         }
-        if (!this.parentElement || !$el.slot || $el.slotProxy || $el.slot === '?' || this.slot === '?') return;
+        if (/* !this.parentElement ||  */!$el.slot || $el.slotProxy || $el.slot === '?' || this.slot === '?') return;
         this.$core.slotted.add($el);
         this.$core.io.unobserve($el);
         const el = $el._slotProxy || createElement.call(this, src, '#comment');
@@ -2871,8 +2871,8 @@ if (!window.ODA) {
                     /*outline: 2px solid var(--focused-color) !important;*/
                     /*background-color: whitesmoke !important;*/
                     /*color: var(--focused-color, red) !important;*/
-                    /*box-shadow: inset 0 0 0 .07em black;*/
-                    border-bottom: 2px solid var(--focused-color) !important;
+                    box-shadow: inset 0 -2px 0 0  var(--focused-color)!important;
+                    /*border-bottom: 2px solid var(--focused-color) !important;*/
                     /*box-sizing: border-box;*/
                     /*filter: brightness(.9) contrast(1);*/
                 };
