@@ -27,17 +27,6 @@ if (!window.ODA) {
         }
     }, true);
 
-    // if ('serviceWorker' in navigator) {
-    //     window.addEventListener('load', function() {
-    //         navigator.serviceWorker.register(import.meta.url.replace('/oda.js', '/sw.js')).then(function(registration) {
-    //             console.log('Service worker registered with scope: ', registration.scope);
-    //         }, function(err) {
-    //             console.log('ServiceWorker registration failed: ', err);
-    //         });
-    //     });
-    // }
-
-
     const domParser = new DOMParser();
     const regExpApply = /(?:@apply\s+)(--[\w-]*\w+)+/g;
     const regExpParseRule = /([a-z\-]+)\s*:\s*((?:[^;]*url\(.*?\)[^;]*|[^;]*)*)\s*(?:;|$)/gi;
@@ -96,36 +85,6 @@ if (!window.ODA) {
     const regexUrl = /https?:\/\/(?:.+\/)[^:?#&]+/g
 
     async function ODA(prototype = {}, origin, context) {
-        // if (typeof prototype.imports === 'string'){
-        //     prototype.imports = prototype.imports.split(',')
-        // }
-        // if (Array.isArray(prototype.imports)){
-        //     let idx =  ODA.$deferred.indexOf(prototype);
-        //     await Promise.all(prototype.imports.map(async i=>{
-        //         let path = i.trim();
-        //         if (path.startsWith('@')){
-        //             if (context && !path.startsWith('@oda'))
-        //                 path = `/api/${context}/${path}`;
-        //             else
-        //                 path = `/${path}`
-        //         }
-        //         if (origin)
-        //             path = origin + '/' + path;
-        //         path = path.replace(/\/\//g, '/');
-        //         console.log(path);
-        //         const module = await import(path);
-
-        //         while (ODA.$deferred.length>idx + 1){
-        //             idx++;
-        //             try {
-        //                 await ODA.regComponent(ODA.$deferred[idx].is, origin, context);
-        //             } catch (err) {
-        //                 console.warn(ODA.$deferred[idx].is, err);
-        //             }
-        //         }
-        //         return module;
-        //     }));
-        // }
         const matches = (new Error()).stack.match(regexUrl);
         prototype.url = prototype.url || matches[matches.length - 1];
         prototype.dir = prototype.url.substring(0, prototype.url.lastIndexOf('/')) + '/';
@@ -211,7 +170,7 @@ if (!window.ODA) {
                         for (let i of classes) {
                             let map = ODA.style.styles['--' + i];
                             if (!map) continue;
-                            i = i + ', ::slotted(.' + i + ')';
+                            i = `${i}, ::slotted(.${i})`;
                             let r = rules['.' + i] = rules['.' + i] || [];
                             for (let s of map.split(';'))
                                 s && r.add(s.trim() + ';')
@@ -226,7 +185,7 @@ if (!window.ODA) {
                         for (let i of attributes) {
                             let map = ODA.style.styles['--' + i];
                             if (!map) continue;
-                            i = '[' + i + '], ::slotted([' + i + '])';
+                            i = `[${i}], ::slotted([${i}])`;
                             let r = rules[i] = rules[i] || [];
                             for (let s of map.split(';'))
                                 s && r.add(s.trim() + ';')
@@ -283,12 +242,6 @@ if (!window.ODA) {
             }
         }
 
-        // const componentResizeObserver = window.ResizeObserver && new ResizeObserver(entries=>{
-        //     for (const obs of entries){
-        //         obs.target.fire('resize');
-        //     }
-        // });
-
         function observe(key, h) {
             core.observers[key] = core.observers[key] || [];
             core.observers[key].push(h);
@@ -316,7 +269,8 @@ if (!window.ODA) {
             }, { rootMargin: '20%' }),
             ro: new ResizeObserver(entries => {
                 for (const obs of entries) {
-                    if (!obs.target.__events || obs.target.__events.has('resize'))
+                    // костыль для открытия dropdown при крутящейся svg
+                    if (!['svg', 'path', 'g'].includes(obs.target.localName) && (!obs.target.__events || obs.target.__events.has('resize')))
                         obs.target.fire('resize');
                 }
             })
@@ -332,11 +286,13 @@ if (!window.ODA) {
                 constructor() {
                     super();
                     this.$core = Object.assign({}, core);
+                    this.$core.data = {};
                     this.$core.slotted = [];
                     this.$core.slotRefs = {};
                     this.$core.events = {};
                     this.$core.cache = { observers: {} };
                     this.$core.debounces = new Map();
+                    this.$core.intervals = new Map();
                     this.$core.renderer = render.bind(this);
                     this.$core.listeners = {};
                     this.properties = prototype.properties;
@@ -410,8 +366,7 @@ if (!window.ODA) {
                     callHook.call(this, 'detached');
                 }
                 get $$savePath() {
-                    const key = this.$core.saveKey || this.saveKey
-                    return this.localName + (key ? '.' + key : '');
+                    return `${this.localName}/${(this.$core.saveKey || this.saveKey  || '')}`;
                 }
                 static get observedAttributes() {
                     if (!prototype.observedAttributes) {
@@ -471,26 +426,35 @@ if (!window.ODA) {
                         ODA.render(this.$core.renderer);
                     if (Object.keys(this.$core.saveProps).length) {
                         const savePath = this.$$savePath;
-                        let save = {};
                         if (force) {
-                            save = JSON.parse(localStorage.getItem(savePath));
-                            if (isObject(save) && Object.keys(save).length > 0) {
+                            const s = JSON.parse(localStorage.getItem(savePath));
+                            if (isObject(s) && Object.keys(s).length > 0) {
                                 for (let p in this.$core.saveProps) {
-                                    this.$core.data[p] = save[p];
+                                    if (s[p] && typeof s[p] === 'object') {
+                                        Object.keys(s[p]).forEach(k => this.$core.data[p][k] = s[p][k]);
+                                    } else this.$core.data[p] = s[p];
                                 }
                             }
                         }
                         else {
-                            for (let p in this.$core.saveProps) {
-                                const val = this.$core.data[p];
-                                let def = this.$core.saveProps[p];
-                                if (typeof def === 'function')
-                                    def = def();
-                                if (Object.equal(val, def)) continue;
-                                save[p] = val;
+                            const s = JSON.parse(localStorage.getItem(savePath)) || {};
+                            for (const k in this.$core.saveProps) {
+                                const val = this.$core.data[k];
+                                let def = this.$core.saveProps[k].default ?? this.$core.saveProps[k]?.computed();
+                                if (typeof def === 'function') def = def();
+                                if (isObject(s[k]) && isObject(val) && isObject(def)) {
+                                    const res = Object.create(s[k]);
+                                    for (const p in val) {
+                                        if (val[p] !== def[p]) {
+                                            res[p] = val[p];
+                                        }
+                                    }
+                                    s[k] = res;
+                                } else if(s[k] !== val) {
+                                    s[k] = val;
+                                }
                             }
-                            if (Object.keys(save).length)
-                                localStorage.setItem(savePath, JSON.stringify(save));
+                            localStorage.setItem(savePath, JSON.stringify(s));
                         }
                     }
                 }
@@ -561,6 +525,26 @@ if (!window.ODA) {
                     }, delay);
                     this.$core.debounces.set(key, t)
                 }
+                interval(key, handler, delay = 0) {
+                    const fn = delay ? setTimeout : requestAnimationFrame;
+                    const clearFn = delay ? clearTimeout : cancelAnimationFrame;
+                    let task = this.$core.intervals.get(key);
+                    if (task) {
+                        task.handler = handler;
+                    } else {
+                        task = {
+                            handler,
+                            id: fn(() => {
+                                const task = this.$core.intervals.get(key);
+                                if (!task) return;
+                                clearFn(task.id);
+                                task.handler.call(this);
+                                this.$core.intervals.delete(key);
+                            }, delay)
+                        };
+                        this.$core.intervals.set(key, task);
+                    }
+                }
                 get $() {
                     return this.$refs;
                 }
@@ -601,30 +585,25 @@ if (!window.ODA) {
                 async(handler, delay = 0) {
                     delay ? setTimeout(handler, delay) : requestAnimationFrame(handler)
                 }
-                __read(path, def) {
-                    this.setting = this.setting || JSON.parse(localStorage.getItem(prototype.is));
-                    if (typeof this.setting !== 'object')
-                        this.setting = {};
-                    path = path.split('/');
-                    let s = this.setting;
-                    while (path.length && s) {
-                        s = s[path.shift()];
+                __read(path = this.$$savePath, def) {
+                    let s = JSON.parse(localStorage.getItem(prototype.is)) ?? {};
+                    const parts = path.split('/');
+                    while (parts.length && s) {
+                        s = s[parts.shift()];
                     }
-                    return s || def;
+                    return s ?? def;
                 }
-                __write(path, value) {
-                    this.setting = this.setting || JSON.parse(localStorage.getItem(prototype.is));
-                    if (this.setting === null)
-                        this.setting = {};
-                    path = path.split('/');
-                    let s = this.setting;
+                __write(path = this.$$savePath, value) {
+                    let settings = JSON.parse(localStorage.getItem(prototype.is)) ?? {};
+                    let s = settings;
+                    const parts = path.split('/');
                     if (s) {
-                        while (path.length > 1) {
-                            const p = path.shift();
+                        while (parts.length > 1) {
+                            const p = parts.shift();
                             s = s[p] = typeof s[p] === 'object' ? s[p] : {};
                         }
-                        s[path.shift()] = value;
-                        localStorage.setItem(prototype.is, JSON.stringify(this.setting));
+                        s[parts.shift()] = value;
+                        localStorage.setItem(prototype.is, JSON.stringify(settings));
                     }
                 }
                 $super(parentName, name, ...args) {
@@ -674,7 +653,7 @@ if (!window.ODA) {
             for (let name in prototype.properties) {
                 const prop = prototype.properties[name];
                 if (prop.save) {
-                    core.saveProps[name] = prop.default;
+                    core.saveProps[name] = { default: prop.default, computed: prop.computed };
                 }
                 prop.name = name;
                 Object.defineProperty(odaComponent.prototype, name, {
@@ -743,10 +722,9 @@ if (!window.ODA) {
                     if (params.includes(undefined)) return;
                     const old = this.$core.cache.observers[obsId] || [];
                     let  r = params.map((i, idx)=>{
-                        if (old[idx] === undefined)
-                            return false;
-
-                        return old[idx] === i// || (old[idx] && i && old[idx].__op__ === i.__op__);
+                        const val = old[idx];
+                        if (val === undefined) return false;
+                        return val === i;// || val?.__op__?.obj === i?.__op__?.obj;
                     });
                     r = r.indexOf(false);
                     if (r < 0) return;
@@ -799,10 +777,10 @@ if (!window.ODA) {
                     prototype.properties[key] = prop;
                 }
                 else if (Array.isArray(prop)) {
-                    const array = [].concat(prop);
+                    const array = deepCopy(prop);
                     prop = prototype.properties[key] = {
                         default() {
-                            return [].concat(array);
+                            return deepCopy(array);
                         }, type: Array
                     };
                 }
@@ -1023,17 +1001,14 @@ if (!window.ODA) {
 
     function makeReactive(obj, props, old) {
         if (!isObject(obj)) return obj;
-        let d = obj.__op__;
-        let hosts = d && d.hosts;
-        if (hosts) {
-            const val = hosts.get(this);
+        if (obj.__op__) {
+            const val = obj.__op__.hosts.get(this);
             if (val) {
                 if (val === obj || (Array.isArray(obj) && val.length))
                     return val;
                 return obj;
             }
             obj.__op__.obj = obj;
-            //obj = obj.__op__.obj || obj;
         }
         else {
             if (Array.isArray(obj)) {
@@ -1042,8 +1017,10 @@ if (!window.ODA) {
                 }
             }
             else if (!isNativeObject(obj)) return obj;
-            // console.dir(obj)
         }
+        return makeProxy.call(this, obj, props, old);
+    }
+    function makeProxy(obj, props, old) {
         const handlers = {
             get: (target, key) => {
                 let val = target[key];
@@ -1111,16 +1088,15 @@ if (!window.ODA) {
         };
 
         const proxy = new Proxy(obj, handlers);
-        if (!hosts) {
-            const options = (old && old.__op__) || { proxy, main: this, obj, self: {} };
-            options.hosts = new Map();
+        if (!obj.__op__) {
+            const options = old?.__op__ || { proxy, main: this, obj, hosts: new Map()};
             Object.defineProperty(obj, '__op__', {
                 enumerable: false,
                 configurable: true,
                 value: options
             });
         }
-        obj.__op__ && obj.__op__.hosts.set(this, proxy);
+        obj.__op__?.hosts.set(this, proxy);
         return proxy;
     }
     function funcToAttribute(name) {
@@ -1477,8 +1453,11 @@ if (!window.ODA) {
         src.el.removeAttribute(attrName);
         const child = parseJSX(prototype, src.el, src.vars);
         const fn = createFunc(src.vars.join(','), expr);
-        const h = function (p = []) {
+        const h = async function (p = []) {
             let items = exec.call(this, fn, p);
+            if (items instanceof Promise)
+                items = await items;
+
             if (!Array.isArray(items)) {
                 items = new Array(+items || 0);
                 for (let i = 0; i < items.length; items[i++] = i);
@@ -1533,11 +1512,11 @@ if (!window.ODA) {
         this.$core.refs = null;
         return $el;
     }
-    function render() {
-        updateDom.call(this, this.$core.node, this.$core.shadowRoot);
+    async function render() {
+        await updateDom.call(this, this.$core.node, this.$core.shadowRoot);
         this.$core.__inRender = false;
     }
-    function updateDom(src, $el, $parent, pars) {
+    async function updateDom(src, $el, $parent, pars) {
         if ($parent) {
             let tag = src.tag;
             if (src.tags) {
@@ -1570,15 +1549,19 @@ if (!window.ODA) {
             for (let i = 0, idx = 0, l = src.children.length; i < l; i++) {
                 let h = src.children[i];
                 if (typeof h === "function") {
-                    for (const node of h.call(this, pars)) {
-                        updateDom.call(this, node.child, $el.childNodes[idx], $el, node.params);
-                        idx++;
-                    }
+                    let items = await h.call(this, pars);
+                    items = items.map((node, i)=>{
+                        return updateDom.call(this, node.child, $el.childNodes[idx+i], $el, node.params);
+                    })
+                    Promise.all(items);
+                    idx += items.length;
+
                     let el = $el.childNodes[idx];
                     while (el && el.$node === h.src) {
                         el.remove();
                         el = $el.childNodes[idx];
                     }
+
                 }
                 else {
                     let el = $el.childNodes[idx];
