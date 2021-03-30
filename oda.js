@@ -4,51 +4,22 @@
  * Under the MIT License.
  */
 
-
 window.globalThis = window.globalThis || window;
 'use strict';
 if (!window.ODA) {
-
-    window.addEventListener('mousedown', e => {
-        if (e.use) return;
-        e.use = true;
-        ODA.mousePos = new DOMRect(e.pageX, e.pageY);
-        if (window.parent !== window)
-            window.parent.dispatchEvent(new MouseEvent('mousedown', e));
-        let i = 0;
-        let w;
-        while (w = window[i]) {
-            if (w) {
-                const ev = new MouseEvent('mousedown', e);
-                ev.use = true;
-                w.dispatchEvent(ev);
-            }
-            i++;
-        }
-    }, true);
-
     const domParser = new DOMParser();
     const regExpApply = /(?:@apply\s+)(--[\w-]*\w+)+/g;
-    const regExpParseRule = /([a-z\-]+)\s*:\s*((?:[^;]*url\(.*?\)[^;]*|[^;]*)*)\s*(?:;|$)/gi;
-    function applyStyleMixins(styleText, styles) {
-        let matches = styleText.match(regExpApply);
-        if (matches) {
-            matches = matches.map(m => m.replace(/@apply\s*/, ''));
-            for (let v of matches) {
-                const rule = styles[v];
-                styleText = styleText.replace(new RegExp(`@apply\\s+${v}\\s*;?`, 'g'), rule);
-            }
-            if (styleText.match(regExpApply))
-                styleText = applyStyleMixins(styleText, styles);
-        }
-        return styleText;
-    }
-    function getStylesMyxins(cssRule, styles = {}) {
+    const commentRegExp = /\/\*[^*/]*\*\//igm;
+    const regExpParseRule = /([a-z-]+)\s*:\s*((?:[^;]*url\(.*?\)[^;]*|[^;]*)*)\s*(?:;|$)/gi;
+
+    const OBS_PREFIX = '$obs$';
+
+    function getStylesMixins(cssRule, styles = {}) {
         const style = cssRule.style;
         if (style) {
             Array.from(style).filter(s => s.startsWith('--')).forEach(s => {
                 const css = getComputedStyle(document.documentElement).getPropertyValue(s);
-                styles[s] = applyStyleMixins(css.replace(/{|}/g, '').trim(), ODA.style && ODA.style.styles || styles);
+                styles[s] = ODA.applyStyleMixins(css.replace(/{|}/g, '').trim(), ODA.style && ODA.style.styles || styles);
             });
         }
         return styles;
@@ -70,16 +41,38 @@ if (!window.ODA) {
             }
         }
     }
+    window.addEventListener('mousedown', e => {
+        if (e.use) return;
+        e.use = true;
+        ODA.mousePos = new DOMRect(e.pageX, e.pageY);
+        if (window.parent !== window)
+            window.parent.dispatchEvent(new MouseEvent('mousedown', e));
+        let i = 0;
+        let w;
+        while (w = window[i]) {
+            if (w) {
+                const ev = new MouseEvent('mousedown', e);
+                ev.use = true;
+                w.dispatchEvent(ev);
+            }
+            i++;
+        }
+    }, true);
+
+
     function isObject(obj) {
         return obj && typeof obj === 'object';
     }
-    Object.__proto__.equal = function (a, b) {
+    Object.equal = Object.equal || function (a, b, recurse) {
         if (a === b) return true;
         if (!isObject(a) || !isObject(b)) return false;
-        if (a.constructor !== Object || b.constructor !== Object) return Object.is(a, b);
-        for (let key in Object.assign({}, a, b))
-            if (!Object.equal(b[key], a[key])) return false;
-        return true;
+        if ((a?.__op__ || a) === (b?.__op__ || b)) return true;
+        if (recurse) {
+            for (let key in Object.assign({}, a, b))
+                if (!Object.equal(b[key], a[key], recurse)) return false;
+            return true;
+        }
+        return false;
     };
     const regExImport = /import\s+?(?:(?:(?:[\w*\s{},]*)\s+from\s+?)|)(?<name>(?:".*?")|(?:'.*?'))[\s]*?(?:;|$|)/g;
     const regexUrl = /https?:\/\/(?:.+\/)[^:?#&]+/g
@@ -110,7 +103,6 @@ if (!window.ODA) {
                         const parent = ODA.telemetry.components[ext];
                         if (!parent)
                             throw new Error(`Not found inherit parent "${ext}"`);
-                        // ODA.error(prototype.is,`not found inherit parent "${ext}"`);
                         return parent;
                     });
                     let template = prototype.template || '';
@@ -143,7 +135,7 @@ if (!window.ODA) {
                         const rules = {};
                         for (let style of styles) {
                             const text = style.textContent;
-                            style.textContent = applyStyleMixins(text, ODA.style.styles);
+                            style.textContent = ODA.applyStyleMixins(text, ODA.style.styles);
                             // *** for compatibility with devices from Apple
                             let txtContent = style.textContent.replace(/\}\}/g, ']]]]').replace(/\s\s+/g, ' ').split('}'),
                                 arrHost = [];
@@ -210,28 +202,17 @@ if (!window.ODA) {
                     convertPrototype(parents);
                     let options;
                     let el;
-                    if (prototype.extends.length === 1 && !ODA.telemetry.components[prototype.extends[0]]) {
-                        el = class extends Object.getPrototypeOf(document.createElement(prototype.extends[0])).constructor {
-                            constructor() {
-                                super();
-                            }
-                            connectedCallback() {
-                                if (prototype.attached)
-                                    prototype.attached.apply(this);
-                            }
-                            disconnectedCallback() {
-                                if (prototype.detached)
-                                    prototype.detached.apply(this);
-
-                            }
-                        };
+                    if (prototype.extends.length === 1 && !prototype.extends[0].includes('-')) {
+                        el = document.createElement(prototype.extends[0]).constructor
+                        prototype.native = prototype.extends[0];
+                        el = ComponentFactory(el);
                         options = { extends: prototype.extends[0] }
                     }
                     else
                         el = ComponentFactory();
                     window.customElements.define(prototype.is, el, options);
                     ODA.telemetry.last = prototype.is;
-                    console.log(prototype.is, 'registered')
+                    console.log(prototype.is, '- ok')
                 }
                 catch (e) {
                     console.error(prototype.is, e);
@@ -257,8 +238,8 @@ if (!window.ODA) {
             deps: {},
             prototype: prototype,
             node: { tag: '#document-fragment', id: 0, dirs: [] },
-            data: {},
-            io: new IntersectionObserver(entries => {
+            defaults: {},
+            intersect: new IntersectionObserver(entries => {
                 for (let i = 0, entry, l = entries.length; i < l; i++) {
                     entry = entries[i];
                     if (!!entry.target.$sleep !== entry.isIntersecting) continue;
@@ -267,11 +248,12 @@ if (!window.ODA) {
                         requestAnimationFrame(() => { entry.target.render.call(entry.target) });
                 }
             }, { rootMargin: '20%' }),
-            ro: new ResizeObserver(entries => {
+            resize: new ResizeObserver(entries => {
                 for (const obs of entries) {
                     // костыль для открытия dropdown при крутящейся svg
-                    if (!['svg', 'path', 'g'].includes(obs.target.localName) && (!obs.target.__events || obs.target.__events.has('resize')))
+                    if (obs.target.__events?.has('resize')/* && !obs.target.$node?.svg*/)
                         obs.target.fire('resize');
+
                 }
             })
         };
@@ -281,10 +263,12 @@ if (!window.ODA) {
             if (!h) return;
             h.call(this);
         }
-        function ComponentFactory() {
-            class odaComponent extends HTMLElement {
+        function ComponentFactory(proto = HTMLElement) {
+            class odaComponent extends proto {
                 constructor() {
                     super();
+                    this.domHost = this.domHost || ODA.currentHost;
+                    this.$proxy = makeReactive.call(this, this);
                     this.$core = Object.assign({}, core);
                     this.$core.data = {};
                     this.$core.slotted = [];
@@ -295,23 +279,25 @@ if (!window.ODA) {
                     this.$core.intervals = new Map();
                     this.$core.renderer = render.bind(this);
                     this.$core.listeners = {};
-                    this.properties = prototype.properties;
-                    const data = deepCopy(core.data);
+                    this.props = prototype.props;
                     const defs = {};
-                    for (let i in data) {
-                        if (this[i]) {
-                            // defs[i] = this[i];
-
-                            data[i] = this[i];
+                    for (let i in this.props) {
+                        const desc = Object.getOwnPropertyDescriptor(this, i);
+                        if (desc) {
+                            defs[i] = makeReactive.call(this, desc.value);
                             delete this[i];
                         }
-
-                        if (prototype.properties[i].freeze) continue;
-                        data[i] = makeReactive.call(this, data[i]);
+                        else {
+                            this['#'+i] = makeReactive.call(this, core.defaults[i]);
+                        }
                     }
-                    this.$core.data = makeReactive.call(this, data, prototype.properties);
+                    try {
+                        this.$core.root = this.$core.shadowRoot = this.attachShadow({ mode: 'closed' });
+                    }
+                    catch (e) {
+                        this.$core.root = this.$core.shadowRoot = new DocumentFragment()
+                    }
 
-                    this.$core.root = this.$core.shadowRoot = this.attachShadow({ mode: 'closed' });
                     callHook.call(this, 'created');
                     ODA.telemetry.components[prototype.is].count++;
                     ODA.telemetry.components.count++;
@@ -331,19 +317,38 @@ if (!window.ODA) {
                     for (let i in defs) {
                         this[i] = defs[i];
                     }
+
+                    if (this.domHost){
+                        let descrs = Object.assign({}, Object.getOwnPropertyDescriptors(this.domHost.constructor.prototype), Object.getOwnPropertyDescriptors(this.domHost));
+                        for (let key in descrs){
+                            if (key in this) continue;
+                            if (key in odaComponent) continue;
+                            const d = descrs[key];
+                            if (!d.get && !d.set) continue;
+                            Object.defineProperty(this, key, {
+                                get(){
+                                    return this.domHost[key];
+                                },
+                                set(val){
+                                    this.domHost[key] = val;
+                                }
+                            })
+                        }
+                    }
                     if (this.$core.shadowRoot) {
-                        this.$core.ro.observe(this);
-                        // componentResizeObserver && componentResizeObserver.observe(this);
-                        // window.addEventListener('resize', e =>{
-                        //     this.fire('resize', e)
-                        // });
+                        this.$core.resize.observe(this);
                         this.render(true);
                         callHook.call(this, 'ready');
                     }
                 }
                 connectedCallback() {
-                    for (const name of core.reflects)
-                        funcToAttribute.call(this, name);
+                    for (const prop of core.reflects){
+                        const val = this[prop.name]
+                        if (val === false || val === undefined || val === null || val === '')
+                            this.removeAttribute(prop.attrName);
+                        else
+                            this.setAttribute(prop.attrName, val === true ? '' : val);
+                    }
                     for (const key in this.$core.observers) {
                         for (const h of this.$core.observers[key])
                             h.call(this);
@@ -366,11 +371,11 @@ if (!window.ODA) {
                     callHook.call(this, 'detached');
                 }
                 get $$savePath() {
-                    return `${this.localName}/${(this.$core.saveKey || this.saveKey  || '')}`;
+                    return `${this.localName}/${(this.$core.saveKey || this.saveKey || '')}`;
                 }
                 static get observedAttributes() {
                     if (!prototype.observedAttributes) {
-                        prototype.observedAttributes = Object.keys(prototype.properties).map(key => prototype.properties[key].attrName);
+                        prototype.observedAttributes = Object.keys(prototype.props).map(key => prototype.props[key].attrName);
                         prototype.observedAttributes.add('slot');
                     }
                     return prototype.observedAttributes;
@@ -386,36 +391,46 @@ if (!window.ODA) {
                 }
                 attributeChangedCallback(name, o, n) {
                     if (o === n) return;
-                    const descriptor = this.properties[name.toCamelCase()];
+                    const descriptor = this.props[name.toCamelCase()];
                     if (Array.isArray(descriptor?.list) && !descriptor.list.includes(n)) {
                         return;
                     }
-                    if (descriptor?.type === Boolean) {
-                        n = (n === '') ? true : (((o === '' && n === undefined) || (n === 'false')) ? false : n);
+                    switch (descriptor?.type){
+                        case Boolean:{
+                            n = (n === '') ? true : (((o === '' && n === undefined) || (n === 'false')) ? false : n);
+                        } break;
+                        case Object:{
+                            n = createFunc('', n, prototype);
+                        } break;
                     }
+
                     if (name === 'slot' && n === '?') {
                         this._retractSlots();
                     }
-                    this.$core.data[name.toCamelCase()] = n;
+                    this[name.toCamelCase()] = n;
                 }
                 updateStyle(styles = {}) {
                     this.$core.style = Object.assign({}, this.$core.style, styles);
                     this.render();
                 }
-                notify(key, stop) {
-                    const obs = this.$core.observers[key];
-                    if (obs) {
-                        for (let h of obs)
-                            h.call(this, stop);
+                notify(block, value) {
+                     this.$core.prototype.$obs?.forEach(o => this[o]);
+                    if (block.target === this){
+                        const prop = block.prop;
+                        if (prop){
+                            if (
+                                this.$node && this.$node.bind && this.$node.bind[prop.name] &&
+                                (prop.notify || this.$node.listeners[prop.attrName + "-changed"])
+                            ){
+                                this.dispatchEvent(new CustomEvent(prop.attrName + '-changed', { detail: { value, src: this }, bubbles: true, cancelable: true }));
+                            }
+                        }
                     }
-                    for (let dep of this.$core.deps[key] || [])
-                        dep.call(this);
 
                     let root = this;
                     while (root && root.domHost)
                         root = root.domHost;
                     root.render();
-                    // callHook.call(this, 'updated');
                 }
                 render(force) {
                     if (!force && (!this.$core.shadowRoot || this.$core.__inRender)) return;
@@ -431,35 +446,34 @@ if (!window.ODA) {
                             if (isObject(s) && Object.keys(s).length > 0) {
                                 for (let p in this.$core.saveProps) {
                                     if (s[p] && typeof s[p] === 'object') {
-                                        Object.keys(s[p]).forEach(k => this.$core.data[p][k] = s[p][k]);
-                                    } else this.$core.data[p] = s[p];
+                                        Object.keys(s[p]).forEach(k => this[p][k] = s[p][k]);
+                                    } else this[p] = s[p];
                                 }
                             }
                         }
                         else {
-                            const s = JSON.parse(localStorage.getItem(savePath)) || {};
-                            for (const k in this.$core.saveProps) {
-                                const val = this.$core.data[k];
-                                let def = this.$core.saveProps[k].default ?? this.$core.saveProps[k]?.computed();
-                                if (typeof def === 'function') def = def();
-                                if (isObject(s[k]) && isObject(val) && isObject(def)) {
-                                    const res = Object.create(s[k]);
-                                    for (const p in val) {
-                                        if (val[p] !== def[p]) {
-                                            res[p] = val[p];
+                            this.debounce('set-to-local-storage', () => {
+                                const s = JSON.parse(localStorage.getItem(savePath)) || {};
+                                for (const k in this.$core.saveProps) {
+                                    const val = this[k];
+                                    let def = this.$core.saveProps[k].default ?? this.$core.saveProps[k]?.computed();
+                                    if (typeof def === 'function') def = def();
+                                    if (isObject(s[k]) && isObject(val) && isObject(def)) {
+                                        const res = Object.create(s[k]);
+                                        for (const p in val) {
+                                            if (val[p] !== def[p]) {
+                                                res[p] = val[p];
+                                            }
                                         }
+                                        s[k] = res;
+                                    } else if (s[k] !== val) {
+                                        s[k] = val;
                                     }
-                                    s[k] = res;
-                                } else if(s[k] !== val) {
-                                    s[k] = val;
                                 }
-                            }
-                            localStorage.setItem(savePath, JSON.stringify(s));
+                                localStorage.setItem(savePath, JSON.stringify(s));
+                            }, 300);
                         }
                     }
-                }
-                get domHost() {
-                    return this.$domHost;
                 }
                 resolveUrl(path) {
                     return prototype.$path + path;
@@ -607,15 +621,6 @@ if (!window.ODA) {
                     }
                 }
                 $super(parentName, name, ...args) {
-                    //
-                    // let id = ODA.telemetry[this.$parent.$options.name].prototype.extends;
-                    // while (id) {
-                    //     const p = ODA.telemetry[id].prototype;
-                    //     const methods = p.methods[name] || p[name];
-                    //     if (typeof methods === 'function')
-                    //         return methods.call(this, ...args);
-                    //     id = p.extends;
-                    // }
                     const components = ODA.telemetry.components;
 
                     if (parentName && components[parentName]) {
@@ -623,7 +628,6 @@ if (!window.ODA) {
                         const method = proto[name];
                         if (typeof method === 'function') return method.call(this, ...args);
                     }
-
                     const getIds = (p) => {
                         const res = [];
                         let id = p.extends;
@@ -647,65 +651,25 @@ if (!window.ODA) {
                         }
                     }
                     throw new Error(`Not found super method: "${name}" `);
-                };
+                }
             }
-
-            for (let name in prototype.properties) {
-                const prop = prototype.properties[name];
-                if (prop.save) {
-                    core.saveProps[name] = { default: prop.default, computed: prop.computed };
-                }
-                prop.name = name;
-                Object.defineProperty(odaComponent.prototype, name, {
-                    enumerable: true,
-                    set(v) {
-                        this.$core.data[name] = v;
-                    },
-                    get() {
-                        return this.$core.data[name];
-                    }
-                });
-                prop.attrName = prop.attrName || name.toKebabCase();
-                if (prop.computed) {
-                    observe(name, function clearComputedValue(stop) {
-                        if (stop) return;
-                        this.$core.data[name] = undefined;
-                    });
-                }
-                if (prop.reflectToAttribute) {
-                    observe(name, function reflectToAttribute() {
-                        funcToAttribute.call(this, name);
-                    });
-                    core.reflects.add(name);
-                }
-                let val = prop.default;
-                if (typeof val === "function")
-                    val = val.call(this);
-                if (val && val.then)
-                    val.then(core.data[name]);
-                else
-                    core.data[name] = val;
-            }
-            core.node.children = prototype.template ? parseJSX(prototype, prototype.template) : [];
-            let cnt = 0;
-            for (let func of prototype.observers) {
-                const obsId = ++cnt;
+            while (prototype.observers.length > 0){
+                let func = prototype.observers.pop();
                 let expr;
+                let fName;
                 if (typeof func === 'function') {
+                    fName = func.name;
                     expr = func.toString();
-                    expr = expr.substring(0, expr.indexOf('{')).replace('async', '').replace('function', '').replace(func.name, '');
+                    expr = expr.substring(0, expr.indexOf('{')).replace('async', '').replace('function', '').replace(fName, '');
                 }
                 else {
-                    expr = func.substring(func.indexOf('('));
+                    fName = func.slice(0, func.indexOf('(')).trim();
+                    expr = func.substring(func.indexOf('(')).trim();
                 }
                 expr = expr.replace('(', '').replace(')', '').trim();
-                const dd = Object.keys(core.data);
-                const vars = expr.split(',').map(prop => {
+                const vars = expr.split(',').map((prop, idx) => {
                     prop = prop.trim();
-                    const idx = dd.indexOf(prop);
-                    if (idx < 0)
-                        ODA.error(prototype.is, `No found propety by name "${prop} for observer ${func.toString()}"`);
-                    return { prop, arg: 'v' + idx };
+                    return { prop, func: createFunc('', prop, prototype), arg: 'v' + idx };
                 });
                 if (typeof func === 'string') {
                     const args = vars.map(i => {
@@ -713,33 +677,160 @@ if (!window.ODA) {
                         func = func.slice(0, idx) + func.slice(idx).replace(i.prop, i.arg);
                         return i.arg;
                     }).join(',');
-                    func = createFunc(args, func, prototype);
+                    func = createFunc(args, func, prototype)// prototype[fName];
                 }
+                if (!func) throw new Error(`function "${fName}" for string observer not found!!`)
+                const obsName = `${OBS_PREFIX}${fName}`;
                 function funcObserver() {
+                    // this['#'+obsName] = true;
                     const params = vars.map(v => {
-                        return this.$core.data[v.prop];
+                        return v.func.call(this);
                     });
-                    if (params.includes(undefined)) return;
-                    const old = this.$core.cache.observers[obsId] || [];
-                    let  r = params.map((i, idx)=>{
-                        const val = old[idx];
-                        if (val === undefined) return false;
-                        return val === i;// || val?.__op__?.obj === i?.__op__?.obj;
-                    });
-                    r = r.indexOf(false);
-                    if (r < 0) return;
-                    this.$core.cache.observers[obsId] = params;
-                    func.call(this, ...params);
-                }
-                for (const v of vars)
-                    observe(v.prop, funcObserver);
-            }
-            Object.getOwnPropertyNames(prototype).forEach(name => {
-                const d = getDescriptor(prototype, name);
-                if (typeof d.value === 'function') {
-                    odaComponent.prototype[name] = function (...args) {
-                        return d.value.call(this, ...args);
+                    // const ss= obsName;
+                    if (!params.includes(undefined)) {
+                        // console.warn(obsName, func);
+                        // ODA.targetStack.push(ODA.dpTarget);
+                        // ODA.dpTarget = undefined;
+
+                        this.async(() => func.call(this, ...params));
+                        // try {
+                        //     func.call(this, ...params);
+                        // }
+                        // catch (e) {
+                        //     console.warn(e.message);
+                        // }
+                        // finally{
+                        //     ODA.dpTarget = ODA.targetStack.pop();
+                        // }
                     }
+                    return true;
+                }
+                if (!fName) throw new Error('ERROR: no function name!');
+                prototype.props[obsName] = {
+                    get: funcObserver
+                };
+                prototype.$obs.push(obsName);
+            }
+            for (let name in prototype.props) {
+                const prop = prototype.props[name];
+                prop.name = name;
+                prop.attrName = prop.attrName || name.toKebabCase();
+                if (prop.reflectToAttribute)
+                    core.reflects.add(prop)
+                if (prop.save) {
+                    core.saveProps[name] = { default: prop.default, computed: prop.get };
+                }
+                const key = '#'+name;
+                const desc = { enumerable: !name.startsWith('_'), configurable: true };
+                prototype.$blocks[key] = Object.create(null);
+                prototype.$blocks[key].getter = prop.get;
+                prototype.$blocks[key].setter = prop.set;
+                prototype.$blocks[key].prop = prop;
+                prototype.$blocks[key].key = key;
+                desc.get = function () {
+                    let val = this[key];
+                    if (val === undefined || (ODA.dpTarget && !this.__op__.blocks?.[key]?.deps?.includes(ODA.dpTarget)))
+                        val = this.$proxy[key];
+                    return val;
+                }
+                desc.set = function (val) {
+                    this.$proxy[key] = toType(prop.type, val);
+                }
+                Object.defineProperty(odaComponent.prototype, name, desc);
+                Object.defineProperty(core.defaults, name, {
+                    enumerable: true,
+                    get() {
+                        if (prop.get)
+                            return undefined;
+                        if (typeof prop.default === "function")
+                            return prop.default.call(this);
+                        else if (Array.isArray(prop.default))
+                            return Array.from(prop.default);
+                        else if (isObject(prop.default))
+                            return Object.assign({}, prop.default);
+                        return prop.default;
+                    }
+                })
+            }
+            core.node.children = prototype.template ? parseJSX(prototype, prototype.template) : [];
+            // let cnt = 0;
+            // let func;
+            // for (let func of prototype.observers) {
+            //     const obsId = ++cnt;
+            //     let expr;
+            //     let fName;
+            //     if (typeof func === 'function') {
+            //         fName = func.name;
+            //         expr = func.toString();
+            //         expr = expr.substring(0, expr.indexOf('{')).replace('async', '').replace('function', '').replace(fName, '');
+            //     }
+            //     else {
+            //         fName = func.slice(0, func.indexOf('('));
+            //         expr = func.substring(func.indexOf('('));
+            //     }
+            //     expr = expr.replace('(', '').replace(')', '').trim();
+            //     const vars = expr.split(',').map((prop, idx) => {
+            //         prop = prop.trim();
+            //         return { prop, func: createFunc('', prop, prototype), arg: 'v' + idx };
+            //     });
+            //     if (typeof func === 'string') {
+            //         const args = vars.map(i => {
+            //             const idx = func.indexOf('(');
+            //             func = func.slice(0, idx) + func.slice(idx).replace(i.prop, i.arg);
+            //             return i.arg;
+            //         }).join(',');
+            //         func = createFunc(args, func, prototype);
+            //     }
+            //     function funcObserver() {
+            //         const params = vars.map(v => {
+            //             return v.func.call(this);
+            //         });
+            //         if (params.includes(undefined)) return;
+            //         const old = this.$core.cache.observers[obsId] || [];
+            //         let r = params.map((i, idx) => {
+            //             const val = old[idx];
+            //             if (val === undefined) return false;
+            //             return Object.equal(val, i);
+            //         });
+            //         r = r.indexOf(false);
+            //         if (r < 0) return;
+            //         this.$core.cache.observers[obsId] = params;
+            //         func.call(this, ...params);
+            //     }
+            //     for (const v of vars)
+            //         observe(v.prop, funcObserver);
+            // }
+            Object.getOwnPropertyNames(prototype).forEach(name => {
+                const desc = getDescriptor(prototype, name);
+                if (typeof desc.value === 'function') {
+                    Object.defineProperty(odaComponent.prototype, name, {
+                        enumerable: true,
+                        writable: true,
+                        value: function (...args) {
+                            return desc.value.call(this, ...args);
+                        }
+                    });
+                }
+                else if (desc.get || desc.set) {
+                    const key = '#'+name;
+                    prototype.$blocks[key] = Object.create(null);
+                    prototype.$blocks[key].key = key;
+                    if (desc.get) {
+                        prototype.$blocks[key].getter = desc.get;
+                        desc.get = function () {
+                            let val = this[key];
+                            if (val === undefined || (ODA.dpTarget && !this.__op__.blocks?.[key]?.deps?.includes(ODA.dpTarget)))
+                                val = this.$proxy[key];
+                            return this.$proxy[key];
+                        }
+                    }
+                    if (desc.set) {
+                        prototype.$blocks[key].setter = desc.set;
+                        desc.set = function (v) {
+                            this.$proxy[key] = v;
+                        }
+                    }
+                    Object.defineProperty(odaComponent.prototype, name, desc);
                 }
             });
             Object.defineProperty(odaComponent, 'name', {
@@ -751,55 +842,51 @@ if (!window.ODA) {
 
         function convertPrototype(parents) {
             prototype.parents = parents;
-            prototype.properties = prototype.properties || prototype.props || {};
+            prototype.$blocks = Object.create(null);
+            prototype.props = prototype.props || {};
             prototype.observers = prototype.observers || [];
-            for (let key in prototype.properties) {
-                let prop = prototype.properties[key];
+            prototype.$obs = [];
+            for (let key in prototype.props) {
+                let prop = prototype.props[key];
                 let computed = prop && (prop.computed || prop.get || (typeof prop === 'function' && !prop.prototype && prop));
                 if (computed) {
                     if (typeof prop === 'function')
-                        prototype.properties[key] = prop = {};
+                        prototype.props[key] = prop = {};
                     if (typeof computed === 'string')
                         computed = prototype[computed];
-                    delete prop.get;
-                    prop.computed = computed;
+                    prop.get = computed;
                 }
                 let watch = prop && (prop.watch || prop.set || prop.observe);
                 if (watch) {
                     if (typeof watch === 'string')
                         watch = prototype[watch];
-                    delete prop.set;
                     delete prop.observe;
-                    prop.watch = watch;
+                    prop.set = watch;
                 }
                 if (typeof prop === "function") {
                     prop = { type: prop };
-                    prototype.properties[key] = prop;
                 }
                 else if (Array.isArray(prop)) {
-                    const array = deepCopy(prop);
-                    prop = prototype.properties[key] = {
-                        default() {
-                            return deepCopy(array);
-                        }, type: Array
-                    };
+                    const array = [].concat(prop);
+                    prop = { default: function () { return [].concat(array); }, type: Array };
                 }
                 else if (typeof prop !== "object") {
-                    prop = prototype.properties[key] = { default: prop, type: prop.__proto__.constructor };
+                    prop = { default: prop, type: prop.__proto__.constructor };
                 }
                 else if (prop === null) {
-                    prop = prototype.properties[key] = { type: Object, default: null };
+                    prop = { type: Object, default: null };
                 }
                 else if (Object.keys(prop).length === 0 || (!computed && !watch && prop.default === undefined && !prop.type && !('shared' in prop))) {
                     const n = Object.assign({}, prop);
-                    prop = prototype.properties[key] = { type: Object, default() { return n } };
+                    prop = { default: function () { return n }, type: Object };
                 }
                 if (prop.shared) {
                     prototype.$shared = prototype.$shared || [];
                     prototype.$shared.add(key)
                 }
-
-                prop.default = (prop.default === undefined) ? (prop.value || prop.def) : prop.default;
+                const def = (prop.default === undefined) ? (prop.value || prop.def) : prop.default;
+                if (def !== undefined)
+                    prop.default = def;
                 delete prop.value;
                 if (prop.default !== undefined && typeof prop.default !== 'function') {
                     switch (prop.type) {
@@ -819,7 +906,6 @@ if (!window.ODA) {
                             else {
                                 prop.type = prop.default.__proto__.constructor;
                             }
-
                         } break;
                         case Object: {
                             if (prop.default) {
@@ -833,6 +919,7 @@ if (!window.ODA) {
                         } break;
                     }
                 }
+                prototype.props[key] = prop;
             }
 
             prototype.listeners = prototype.listeners || {};
@@ -874,21 +961,23 @@ if (!window.ODA) {
 
             parents.forEach(parent => {
                 if (typeof parent === 'object') {
+                     prototype.$obs.add(...parent.prototype.$obs);
                     if (parent.prototype.$shared) {
                         prototype.$shared = prototype.$shared || [];
                         prototype.$shared.add(...parent.prototype.$shared)
                     }
-                    for (let key in parent.prototype.properties) {
-                        let p = parent.prototype.properties[key];
-                        let me = prototype.properties[key];
+                    for (let key in parent.prototype.props) {
+                        let p = parent.prototype.props[key];
+                        let me = prototype.props[key];
                         if (!me) {
                             p = Object.assign({}, p);
                             p.extends = parent.prototype.is;
-                            prototype.properties[key] = p;
+                            prototype.props[key] = p;
                         }
                         else {
+
                             for (let k in p) {
-                                if (!me[k]) {
+                                if (!(k in me)) {
                                     me[k] = p[k];
                                 }
                                 else if (k === 'type' && p[k] && me[k] !== p[k]) {
@@ -908,26 +997,26 @@ if (!window.ODA) {
                             prototype.listeners[key] = par.value;
                         }
                     }
-                    parent.prototype.observers.forEach(func => {
-                        let name;
-                        if (typeof func === 'function') {
-                            name = func.name;
-                        }
-                        else {
-                            name = func.split(' ')[0]
-                        }
-                        const f = prototype.observers.find(func => {
-                            if (typeof func === 'function') {
-                                return name === func.name;
-                            }
-                            else {
-                                return func.startsWith(name);
-                            }
-                        });
-                        if (!f) {
-                            prototype.observers.push(func);
-                        }
-                    });
+                    // parent.prototype.observers.forEach(func => {
+                    //     let name;
+                    //     if (typeof func === 'function') {
+                    //         name = func.name;
+                    //     }
+                    //     else {
+                    //         name = func.split(' ')[0]
+                    //     }
+                    //     const f = prototype.observers.find(func => {
+                    //         if (typeof func === 'function') {
+                    //             return name === func.name;
+                    //         }
+                    //         else {
+                    //             return func.startsWith(name);
+                    //         }
+                    //     });
+                    //     if (!f) {
+                    //         prototype.observers.push(func);
+                    //     }
+                    // });
                     for (let key in parent.prototype) {
                         const p = getDescriptor(parent.prototype, key);
                         const self = getDescriptor(prototype, key);
@@ -945,6 +1034,11 @@ if (!window.ODA) {
                                 }
                             }
                         }
+                        else if (!self && (p.get || p.set)){
+                            Object.defineProperty(prototype, key, p)
+                            //todo уточнить наследование если у родителя set а у наследника get
+                        }
+                        // else Object.defineProperty(prototype, key, self ? { ...p, ...self } : p);
                     }
                 }
             });
@@ -960,31 +1054,28 @@ if (!window.ODA) {
             document.addEventListener('framework-ready', handler)
         }
         return prototype;
-    };
-
-
-    // ODA.$deferred = {};
-
-    // ODA.regComponent = async function (id, origin, context) {
-    //     if (window.customElements.get(id)) return;
-    //     if (!(id in ODA.$deferred))
-    //         throw new Error(`Prototype ${id} not found!`);
-    //     await ODA.$deferred[id].load(origin, context);
-    //     // const prototype = ODA.$deferred.find(p=>p.is === id);
-    //     // if (!prototype)
-    //     //     throw new Error(`Prototype ${id} not found!`);
-    //     // await ODA(ODA.$deferred[id].prototype, origin, context);
-    // }
-
+    }
     ODA.isLocal = document.location.hostname === 'localhost';
     ODA.$url = import.meta.url;
     ODA.$dir = ODA.$url.substring(0, ODA.$url.lastIndexOf('/'));
-    // import (ODA.$dir+"/tools/algorithms/search/levenshtein/levenshtein.js").then(res=>{
-    //     ODA.levenstein = res;
-    // })
     const getDescriptor = Object.getOwnPropertyDescriptor;
     window.ODA = ODA;
-
+    ODA.applyStyleMixins = function (styleText, styles) {
+        while (styleText.match(commentRegExp)) {
+            styleText = styleText.replace(commentRegExp, '');
+        }
+        let matches = styleText.match(regExpApply);
+        if (matches) {
+            matches = matches.map(m => m.replace(/@apply\s*/, ''));
+            for (let v of matches) {
+                const rule = styles[v];
+                styleText = styleText.replace(new RegExp(`@apply\\s+${v}\\s*;?`, 'g'), rule);
+            }
+            if (styleText.match(regExpApply))
+                styleText = ODA.applyStyleMixins(styleText, styles);
+        }
+        return styleText;
+    }
     try {
         ODA.rootPath = import.meta;
         ODA.rootPath = ODA.rootPath.url.replace('/oda.js', '');
@@ -992,120 +1083,120 @@ if (!window.ODA) {
         console.error(e);
     }
 
-    function signals(prop, value, old) {
-        if (this.$node && this.$node.bind && this.$node.bind[prop.name] && (prop.notify || this.$node.listeners[prop.attrName + "-changed"]))
-            this.dispatchEvent(new CustomEvent(prop.attrName + '-changed', { detail: { value, src: this }, bubbles: true, cancelable: true }));
-        if (prop.watch)
-            prop.watch.call(this, value, old);
-    }
-
-    function makeReactive(obj, props, old) {
-        if (!isObject(obj)) return obj;
-        if (obj.__op__) {
-            const val = obj.__op__.hosts.get(this);
-            if (val) {
-                if (val === obj || (Array.isArray(obj) && val.length))
-                    return val;
-                return obj;
-            }
-            obj.__op__.obj = obj;
-        }
-        else {
-            if (Array.isArray(obj)) {
-                for (let i = 0, l = obj.length; i < l; i++) {
-                    obj[i] = makeReactive.call(this, obj[i]);
+    const reCheckKey = /^__.+__$/;
+    const reCheckArrayKey = /\d+/;
+    ODA.targetStack = [];
+    function makeReactive(target, oldTarget) {
+        if (!isObject(target)) return target;
+        const val = target.__op__?.hosts?.get(this);
+        if (val !== undefined) return val;
+        if (target !== this){
+            if (Array.isArray(target)) {
+                for (const i in target) {
+                    target[i] = makeReactive.call(this, target[i]);
                 }
             }
-            else if (!isNativeObject(obj)) return obj;
+            else if (!isNativeObject(target)) return target;
         }
-        return makeProxy.call(this, obj, props, old);
-    }
-    function makeProxy(obj, props, old) {
+
+
+        if (target.__op__){
+            target.__op__.hosts.set(this, target.__op__.proxy);
+            return target.__op__.proxy
+        }
+        const options = target.__op__ || Object.create(null);
         const handlers = {
             get: (target, key) => {
-                let val = target[key];
-                if (val && (typeof val === 'function' || typeof key === 'symbol' || (Array.isArray(target) && !/\d+/.test(key)) || /^__/.test(key)))
-                    return val;
-                if (this.$core.target && !Array.isArray(target) && this.$core.target !== key) {
-                    let deps = this.$core.deps[key];
-                    if (!deps)
-                        deps = this.$core.deps[key] = this.$core.observers[this.$core.target] || [];
-                    else {
-                        for (let h of this.$core.observers[this.$core.target] || [])
-                            deps.add(h)
-                    }
+                let val = options.target[key];
+                const block = options.blocks[key] || (options.blocks[key] = Object.assign({target, key, deps: []}, this.$core.prototype.$blocks[key] || {}));
+                if (ODA.dpTarget && ODA.dpTarget !== block && !block.deps.includes(ODA.dpTarget)){
+                    block.deps.push(ODA.dpTarget);
+                    ODA.dpTarget.count++;
                 }
-                const prop = props && props[key];
-                if (prop) {
-                    if (prop.computed) {
-                        if (prop.reactive || !val || this.$core.deps[key] === undefined) {
-
-                            const before = this.$core.target;
-                            this.$core.target = key;
-                            let nval = prop.computed.call(this);
-                            if (!prop.freeze)
-                                nval = makeReactive.call(this, nval);
-                            this.$core.deps[key] = this.$core.deps[key] || [];
-                            this.$core.target = before;
-                            if (nval !== val) {
-                                val = target[key] = nval;
-                                for (let host of target.__op__.hosts.keys()) {
-                                    prop && signals.call(host, prop, val);
-                                }
+                if (val === undefined) {
+                    if (block.getter) {
+                        if (ODA.dpTarget !== block) {
+                            block.count = block.count || 0;
+                            ODA.dpTarget && ODA.targetStack.push(ODA.dpTarget);
+                            ODA.dpTarget = block;
+                            val = block.getter.call(target);
+                            if (val instanceof Promise) {
+                                return val.then(val => {
+                                    ODA.dpTarget = ODA.targetStack.pop();
+                                    return getProxyValue.call(this,  block, val, options);
+                                }).catch(e => {
+                                    console.warn(e)
+                                })
                             }
+                            ODA.dpTarget = ODA.targetStack.pop();
+                            return getProxyValue.call(this,  block, val, options);
                         }
-                        return val;
                     }
-                    else if (prop.freeze) {
-                        return val;
+                    else if (target.domHost && !(key in target)){
+                        // val = target.domHost.$proxy[key];
                     }
                 }
-                return val && makeReactive.call(this, val);
+                if (ODA.dpTarget || (block.prop && !block.prop.freeze))
+                    val = makeReactive.call(this, val);
+                return val;
             },
-            set: (target, key, value) => {
-                let prop = props && props[key];
-                if (value !== undefined && prop) {
-                    if (prop.type === Boolean)
-                        value = (value === 'true') || !!value;
-                    else if (prop.type === Number)
-                        value = +value;
-                }
-                const old = target[key];
-                if (old === value) return true;
-                if (value && (!prop || !prop.freeze)) {
-                    value = makeReactive.call(this, value, undefined, old);
-                    if (old === value) return true;
-                }
-                target[key] = value;
-                for (let map of target.__op__.hosts) {
-                    const host = map[0];
-                    const val = map[1];
-                    host.notify(key/*, value === undefined*/);
-                    prop && signals.call(host, prop, value, old);
-                }
+            set: async (target, key, value) => {
+                const old = options.target[key];
+                if (Object.equal(old, value)) return true;
+                const block = options.blocks[key] || (options.blocks[key] = Object.assign({target, key, deps: []}, this.$core.prototype.$blocks[key] || {}));
+                getProxyValue.call(this, block, value, options, true, old);
                 return true;
             }
         };
 
-        const proxy = new Proxy(obj, handlers);
-        if (!obj.__op__) {
-            const options = old?.__op__ || { proxy, main: this, obj, hosts: new Map()};
-            Object.defineProperty(obj, '__op__', {
+        const proxy = new Proxy(options?.target || target, handlers);
+        if (!target.__op__) {
+            options.target = target;
+            options.hosts = new Map();
+            options.proxy = proxy;
+            options.blocks = Object.create(null);
+            Object.defineProperty(target, '__op__', {
                 enumerable: false,
                 configurable: true,
                 value: options
             });
         }
-        obj.__op__?.hosts.set(this, proxy);
+        options.hosts.set(this, proxy);
         return proxy;
     }
-    function funcToAttribute(name) {
-        const val = this.$core.data[name];
-        name = name.toKebabCase();
-        if (val === false || val === undefined || val === null || val === '')
-            this.removeAttribute(name);
-        else
-            this.setAttribute(name, val === true ? '' : val);
+
+    function getProxyValue(block, val, options, setter, old){
+        const target = block.target;
+        const key = block.key;
+        if (ODA.dpTarget || (block.prop && !block.prop.freeze))
+            val = makeReactive.call(this, val, old);
+        if(setter || block.count)
+            target[key] = val;
+        resetDeps(block, [], setter);
+        for (let host of options.hosts.keys()) {
+            host.notify?.(block, val);
+        }
+        if (block.setter) {
+            const v = block.setter.call(target, val, old);
+            if (v !== undefined)
+                val = target[v] =  makeReactive.call(this, val, old);
+        }
+        if(block.prop && block.prop.reflectToAttribute && this.parentElement){
+            if (val === false || val === undefined || val === null || val === '')
+                this.removeAttribute(block.prop.attrName);
+            else
+                this.setAttribute(block.prop.attrName, val === true ? '' : val);
+        }
+        return val;
+    }
+    function resetDeps(block, stack = [], recurse){
+        block.deps.forEach(i => {
+            if (i === block) return;
+            i.target[i.key] = undefined;
+            if (!recurse || stack.includes(i)) return;
+            stack.add(i)
+            resetDeps(i, stack, recurse);
+        })
     }
     let sid = 0;
     class VNode {
@@ -1144,25 +1235,7 @@ if (!window.ODA) {
             return this._translate !== false;
         }
     }
-
-    function exprOptionalConverter(expr) {
-        const matches = expr.match(reDotQ).filter(i => i);
-        for (let str of matches) {
-            const m1 = str.match(reDotQ1);
-            let step = '', res = '';
-            for (let str1 of m1) {
-                const v = str1.replace('?', '');
-                step += v;
-                res += (res ? ' && ' : '') + step;
-            }
-            expr = expr.replace(str, '(' + res + ')');
-        }
-        return expr;
-    }
     const dirRE = /^((oda|[a-z])?-)|~/;
-    const reDotQ = /(\b\w+\?)((\..?\w+|\[.+?\]|\(.+?\)(?=\s))\??)+/g;
-    //const reDotQ1 = /(\[.+?\](\?(?=(\.|\[)))?)|\.?\b\w+(\?(?=(\.|\[)))?/g;
-    const reDotQ1 = /(\[.+?\](\?(?=(\.|\[)))?)|\.?\$*\b\w+(\?(?=(\.|\[)))?/g;
     function parseJSX(prototype, el, vars = []) {
         if (typeof el === 'string') {
             let tmp = document.createElement('template');
@@ -1184,8 +1257,8 @@ if (!window.ODA) {
                 src.text.push(function textContent($el) {
                     let value = exec.call(this, fn, $el.$for);
                     if ($el._text === value) return;
-                    $el._text = value;
-                    $el.nodeValue = src.translate ? ODA.translate(value, src.language) : value;
+                    $el.nodeValue = $el._text = value;
+                    // $el.nodeValue = src.translate ? ODA.translate(value, src.language) : value;
                 });
             }
             else
@@ -1201,15 +1274,15 @@ if (!window.ODA) {
                 let modifiers;
                 if (prototype[expr])
                     expr += '()';
-                else if (reDotQ.test(expr)) {
-                    expr = exprOptionalConverter(expr);
-                }
+                // else if (reDotQ.test(expr)) {
+                //     expr = exprOptionalConverter(expr);
+                // }
                 if (/^(:|bind:)/.test(attr.name)) {
                     name = name.replace(/^(::?|:|bind::?)/g, '');
                     if (tags[name])
-                        new Tags(src, name, expr, vars);
+                        new Tags(src, name, expr, vars, prototype);
                     else if (directives[name])
-                        new Directive(src, name, expr, vars);
+                        new Directive(src, name, expr, vars, prototype);
                     else if (name === 'for')
                         return forDirective(prototype, src, name, expr, vars, attr.name);
                     else {
@@ -1265,9 +1338,9 @@ if (!window.ODA) {
                     if (name === 'for')
                         return forDirective(prototype, src, name, expr, vars, attr.name);
                     else if (tags[name])
-                        new Tags(src, name, expr, vars);
+                        new Tags(src, name, expr, vars, prototype);
                     else if (directives[name])
-                        new Directive(src, name, expr, vars);
+                        new Directive(src, name, expr, vars, prototype);
                     else
                         throw new Error('Unknown directive ' + attr.name);
                 }
@@ -1282,14 +1355,17 @@ if (!window.ODA) {
                     const fn = new Function(params.join(','), `with (this) {${expr}}`);
                     src.listeners = src.listeners || {};
                     const handler = prototype[expr];
-                    src.listeners[name] = function (e) {
+                    src.listeners[name] = async function (e) {
                         modifiers && modifiers.stop && e.stopPropagation();
                         modifiers && modifiers.prevent && e.preventDefault();
                         modifiers && modifiers.immediate && e.stopImmediatePropagation();
                         if (typeof handler === 'function')
-                            handler.call(this, e, e.detail);
+                            await handler.call(this, e, e.detail);
                         else
-                            exec.call(this, fn, [e, e.detail, ...(e.target.$for || [])]);
+                            await exec.call(this, fn, [e, e.detail, ...(e.target.$for || [])]);
+                        this.async(() => {
+                            this.render();
+                        })
                     };
                 }
                 else if (name === 'is')
@@ -1314,13 +1390,17 @@ if (!window.ODA) {
             }
             if (prototype.$shared && src.tag !== 'STYLE') {
                 for (let key of prototype.$shared) {
-                    if (!src.bind || !src.bind[key]) {
+                    if (src.bind?.[key] === undefined) {
                         src.bind = src.bind || {};
                         let fn = createFunc(vars.join(','), key, prototype);
                         src.bind[key] = function (params, $el) {
-                            const result = exec.call(this, fn, params);
-                            return result === undefined ? $el[key] : result;
-                        };
+                            let result = exec.call(this, fn, params);
+                            if (result === undefined)
+                                result = $el[key];
+                            if (result === undefined)
+                                result = prototype.props[key]?.default;
+                            return result;
+                        }
                     }
                 }
             }
@@ -1366,9 +1446,17 @@ if (!window.ODA) {
         },
         props($el, fn, p) {
             const props = exec.call(this, fn, p);
-            for (let i in props) {
-                $el.setProperty(i, props[i]);
+            if (this.props === props){
+                for (let i in props) {
+                    $el.setProperty(i, this[i]);
+                }
             }
+            else{
+                for (let i in props) {
+                    $el.setProperty(i, props[i]);
+                }
+            }
+
         },
         ref($el, fn, p) {
             const ref = exec.call(this, fn, p);
@@ -1407,7 +1495,7 @@ if (!window.ODA) {
         },
         style($el, fn, p) {
             let s = exec.call(this, fn, p) || '';
-            if (!Object.equal($el.$style, s)) {
+            if (!Object.equal($el.$style, s, true)) {
                 $el.$style = s;
                 if (Array.isArray(s))
                     s = s.join('; ');
@@ -1420,17 +1508,18 @@ if (!window.ODA) {
         }
     };
     class Directive {
-        constructor(src, name, expr, vars) {
-            expr = expr || 'true';
-            src.fn[name] = createFunc(vars.join(','), expr);
+        constructor(src, name, expr, vars, prototype) {
+            if (expr === '')
+                expr = name.replace(/:+/, '').toCamelCase();
+            src.fn[name] = createFunc(vars.join(','), expr, prototype);
             src.fn[name].expr = expr;
             src.dirs = src.dirs || [];
             src.dirs.push(directives[name])
         }
     }
     class Tags {
-        constructor(src, name, expr, vars) {
-            src.fn[name] = expr ? createFunc(vars.join(','), expr) : null;
+        constructor(src, name, expr, vars, prototype) {
+            src.fn[name] = expr ? createFunc(vars.join(','), expr, prototype) : null;
             src.tags = src.tags || [];
             src.tags.push(tags[name])
         }
@@ -1452,19 +1541,28 @@ if (!window.ODA) {
         src.vars.push(...newVars);
         src.el.removeAttribute(attrName);
         const child = parseJSX(prototype, src.el, src.vars);
-        const fn = createFunc(src.vars.join(','), expr);
+        const fn = createFunc(src.vars.join(','), expr, prototype);
         const h = async function (p = []) {
             let items = exec.call(this, fn, p);
             if (items instanceof Promise)
                 items = await items;
+            else if (typeof items === 'string')
+                items = items.split('');
 
             if (!Array.isArray(items)) {
-                items = new Array(+items || 0);
+                items = +items || 0;
+                if (items < 0)
+                    items = 0
+                items = new Array(items);
+                if (items < 0)
+                    items = 0;
                 for (let i = 0; i < items.length; items[i++] = i);
             }
-            return items.map((item, i) => {
-                return { child, params: [...p, item, i, items] }
-            })
+            const res = [];
+            for (let i = 0; i < items.length; i++) {
+                res.push({ child, params: [...p, items[i], i, items] });
+            }
+            return res;
         };
         h.src = child;
         return h;
@@ -1481,28 +1579,30 @@ if (!window.ODA) {
             else {
                 if (src.svg)
                     $el = document.createElementNS(svgNS, tag.toLowerCase());
-                else
+                else{
+                    ODA.currentHost = this;
                     $el = document.createElement(tag);
+                    ODA.currentHost = undefined;
+                }
+
+
                 if (tag !== 'STYLE') {
-                    this.$core.ro.observe($el);
-                    // componentResizeObserver && componentResizeObserver.observe($el);
-                    this.$core.io.observe($el);
+                    this.$core.resize.observe($el);
+                    this.$core.intersect.observe($el);
                 }
                 if (src.attrs)
                     for (let i in src.attrs)
                         $el.setAttribute(i, src.attrs[i]);
-
+                for (const e in src.listeners || {}) {
+                    const event = (ev) => {
+                        src.listeners[e].call(this, ev);
+                    }
+                    $el.addEventListener(e, event);
+                }
             }
             $el.$cache = {};
             $el.$node = src;
-            $el.$domHost = this;
-            for (const e in src.listeners || {}) {
-                const event = (ev) => {
-                    src.listeners[e].call(this, ev);
-                }
-                $el.addEventListener(e, event);
-            }
-
+            $el.domHost = this;
         }
         else if ($el.nodeType === 1) {
             for (let i of $el.attributes) {
@@ -1550,8 +1650,8 @@ if (!window.ODA) {
                 let h = src.children[i];
                 if (typeof h === "function") {
                     let items = await h.call(this, pars);
-                    items = items.map((node, i)=>{
-                        return updateDom.call(this, node.child, $el.childNodes[idx+i], $el, node.params);
+                    items = items.map((node, i) => {
+                        return updateDom.call(this, node.child, $el.childNodes[idx + i], $el, node.params);
                     })
                     Promise.all(items);
                     idx += items.length;
@@ -1585,27 +1685,25 @@ if (!window.ODA) {
                     requestAnimationFrame(() => {
                         $el.fire(i + '-changed');
                     });
-                }
-                else {
+                } else {
                     $el.setProperty(i, b);
                 }
             }
-
-        if ($el.$core)
-            for (let i in $el.$core.style || {})
-                $el.style[i] = $el.$core.style[i];
         if ($el.$core) {
+
             $el.render();
         }
-        else if ($el.localName === 'slot') {
-            const elements = ($el.assignedElements && $el.assignedElements()) || [];
-            for (let el of elements) {
-                el.render && el.render();
+        else
+            if ($el.localName === 'slot') {
+                const elements = ($el.assignedElements && $el.assignedElements()) || [];
+                for (let el of elements) {
+                    el.render && el.render();
+                }
             }
-        }
+
         if (/* !this.parentElement ||  */!$el.slot || $el.slotProxy || $el.slot === '?' || this.slot === '?') return;
         this.$core.slotted.add($el);
-        this.$core.io.unobserve($el);
+        this.$core.intersect.unobserve($el);
         const el = $el._slotProxy || createElement.call(this, src, '#comment');
         el.slotTarget = $el;
         $el.slotProxy = el;
@@ -1626,7 +1724,7 @@ if (!window.ODA) {
         requestAnimationFrame(() => {
             let host;
             for (host of this.$core.shadowRoot.querySelectorAll('*')) {
-                if (host.$core && host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)) {
+                if (host.$core?.prototype.slots?.includes($el.slot)) {
                     host.appendChild($el);
                     return;
                 }
@@ -1635,12 +1733,12 @@ if (!window.ODA) {
             host = this;
             while (host) {
                 for (let ch of host.children) {
-                    if (ch.$core && ch.$core.prototype.slots && ch.$core.prototype.slots.includes($el.slot)) {
+                    if (ch.$core?.prototype.slots?.includes($el.slot)) {
                         ch.appendChild($el);
                         return;
                     }
                 }
-                if (host.$core.prototype.slots && host.$core.prototype.slots.includes($el.slot)) {
+                if (host.$core.prototype.slots?.includes($el.slot)) {
                     host.appendChild($el);
                     return;
                 }
@@ -1648,58 +1746,28 @@ if (!window.ODA) {
             }
             this.appendChild($el);
         })
-
     }
-
     const regExpWords = /[a-zA-Z][a-z]+|[a-zA-Z]/g;
-
     ODA.translates = { phrases: [], words: [] };
     ODA.translate = function (text, language) {
         return text;
-        // if (text && ODA.dictionary && (language || ODA.language) !== 'en' && text.length<255){
-        //     const phrase = ODA.translates.phrases.find(i => i.text === text);
-        //     if (!phrase && ODA.levenstein){
-        //         const list = ODA.levenstein.levenshteinList(text, Object.keys(ODA.dictionary), true).filter(i=>i.distance === 0 );
-        //         let translate = list.length?ODA.dictionary[list[0].value]:'';
-        //         ODA.translates.phrases.push({text, translate});
-        //         for (let i of (text.match(regExpWords) || [])){
-        //             i = i.toLowerCase();
-        //             if (ODA.translates.words.find(w=>(w.text === i)))
-        //                 continue;
-        //             const word = ODA.translates.words[i]
-        //             if (!word){
-        //                 const words = ODA.levenstein.levenshteinList(i, Object.keys(ODA.dictionary), true).filter(i=>i.distance === 0 );
-        //                 let translate = words.length?ODA.dictionary[words[0].value]:''
-        //                 ODA.translates.words.push({text: i, translate});
-        //             }
-        //         }
-        //     }
-        //     else if (phrase.translate)
-        //         text = phrase.translate;
-        // }
-        // return text;
     }
 
-    let renderQueue = [], rafID = 0, limit = 15;
+    let renderQueue = [], rafID = 0;
     let q = [];
     ODA.render = function (renderer) {
         renderQueue.add(renderer);
-         if (rafID === 0)
+        if (rafID === 0)
             rafID = requestAnimationFrame(raf);
     };
     function raf() {
-        if (q.length === 0){
-            q = renderQueue;
-            renderQueue = [];
-        }
-        let now = new Date();
-        while (q.length && ((new Date() - now) < limit)) {
-            q.shift()();
-        }
-        if (q.length === 0 && renderQueue.length === 0)
-            rafID = 0;
-        else
-            rafID = requestAnimationFrame(raf);
+        // if (q.length === 0) {
+        //     q = renderQueue;
+        //     renderQueue = [];
+        // }
+        while (renderQueue.length)
+            renderQueue.shift()();
+        rafID = (q.length + renderQueue.length) ? requestAnimationFrame(raf) : 0;
     }
 
     function parseModifiers(name) {
@@ -1715,7 +1783,7 @@ if (!window.ODA) {
             return new Function(vars, `with (this) {return (${expr})}`);
         }
         catch (e) {
-            console.error('%c' + expr + '\r\n', 'color: black; font-weight: bold; padding: 4px;', prototype.is, e);
+            console.error('%c' + expr + '\r\n', 'color: black; font-weight: bold; padding: 4px;', prototype.is, prototype.url, e);
         }
     }
     function exec(fn, p = []) {
@@ -1723,7 +1791,7 @@ if (!window.ODA) {
             return fn.call(this, ...p);
         }
         catch (e) {
-            console.error('%c' + fn.toString() + '\r\n', 'color: black; padding: 4px;', this, e);
+            console.error('%c' + fn?.toString() + '\r\n', 'color: blue; padding: 4px;', this, e);
         }
     }
     const forVars = ['item', 'index', 'items'];
@@ -1745,34 +1813,57 @@ if (!window.ODA) {
         }
     });
 
-    Object.defineProperty(Array.prototype, 'has', { enumerable: false, value: Array.prototype.includes });
-    Object.defineProperty(Array.prototype, 'clear', {
-        enumerable: false, value: function () {
-            this.splice(0);
+
+    const fnIncl = Array.prototype.includes;
+    Object.defineProperty(Array.prototype, 'includes', {
+        enumerable: false, configurable: true, value: function (item) {
+            return fnIncl.call(this, item) || this.indexOf(item) > -1;
         }
     });
-    Object.defineProperty(Array.prototype, 'last', {
-        enumerable: false, get() {
-            return this[this.length - 1];
-        }
-    });
-    Object.defineProperty(Array.prototype, 'add', {
-        enumerable: false, value: function (...item) {
-            for (let i of item) {
-                if (this.includes(i)) continue;
-                this.push(i);
+
+
+    if (!Array.prototype.nativeIndexOf) {
+        Object.defineProperty(Array.prototype, 'nativeIndexOf', { enumerable: false, configurable: true, value: Array.prototype.indexOf });
+        Object.defineProperty(Array.prototype, 'indexOf', {
+            enumerable: false, configurable: true, value: function (item) {
+                let idx = Array.prototype.nativeIndexOf.call(this, item);
+                if (!~idx)
+                    idx = this.findIndex(i => {
+                        return Object.equal(i, item);
+                    })
+                return idx;
             }
-        }
-    });
-    Object.defineProperty(Array.prototype, 'remove', {
-        enumerable: false, value: function (...items) {
-            for (const item of items) {
-                const idx = this.indexOf(item);
-                if (idx < 0) continue;
-                this.splice(idx, 1);
+        });
+        Object.defineProperty(Array.prototype, 'has', {
+            enumerable: false, configurable: true, value: Array.prototype.includes
+        });
+        Object.defineProperty(Array.prototype, 'clear', {
+            enumerable: false, configurable: true, value: function () {
+                this.splice(0);
             }
-        }
-    });
+        });
+        Object.defineProperty(Array.prototype, 'last', {
+            enumerable: false, configurable: true, get() {
+                return this[this.length - 1];
+            }
+        });
+        Object.defineProperty(Array.prototype, 'add', {
+            enumerable: false, configurable: true, value: function (...item) {
+                for (let i of item) {
+                    if (this.includes(i)) continue;
+                    this.push(i);
+                }
+            }
+        });
+        Object.defineProperty(Array.prototype, 'remove', {
+            enumerable: false, configurable: true, value: function (...items) {
+                for (const item of items) {
+                    let idx = this.indexOf(item);
+                    this.splice(idx, 1);
+                }
+            }
+        });
+    }
     function cached(fn) {
         const cache = Object.create(null);
         return (function cachedFn(str) {
@@ -1796,6 +1887,9 @@ if (!window.ODA) {
     function toCamel(str) {
         return (camelGlossary[str] = str.replace(/-(\w)/g, function (_, c) { return c ? c.toUpperCase() : '' }))
     }
+    String.prototype.replaceAll = function (search, replace) {
+        return this.replace(new RegExp(search, 'g'), replace);
+    };
     if (!String.toCamelCase) {
         Object.defineProperty(String.prototype, 'toCamelCase', {
             enumerable: false, value: function () {
@@ -1849,44 +1943,77 @@ if (!window.ODA) {
         }
         return false;
     };
-    ODA.error = (component, ...args) => ODA.console(component, 'red', ...args);
-    ODA.warn = (component, ...args) => ODA.console(component, 'orange', ...args);
-    ODA.success = (component, ...args) => ODA.console(component, 'green', ...args);
-    ODA.log = (component, ...args) => ODA.console(component, 'gray', ...args);
-    ODA.console = async (component = { localName: 'unknown' }, color, ...args) => {
-        if (window.top === window.self) {
-            await import('/web/tools/console/console.js');
-            const logComponent = document.body.querySelector('oda-console') || document.body.appendChild(ODA.createComponent('oda-console'));
-            component = (component && component.localName) || component;
-            const item = {
-                component,
-                style: `color: white; font-weight: bold; background-color: ${color}; padding: 1px 8px; border-radius: 8px`,
-                text: [...args].join(' ')
-            };
-            logComponent.items = logComponent.items ? [item, ...logComponent.items] : [item];
-        } else { }
+    const _logFunction = async (type, ...args) => {
+        const colors = {
+            error: 'color: red',
+            warn: 'color: orange',
+            success: 'color: green'
+        };
+        const bodyLink = window.top?.document.body || document.body;
+        await import('./tools/console/console.js');
+        const logComponent = bodyLink.querySelector('oda-console') || bodyLink.appendChild(ODA.createComponent('oda-console'));
+        const item = {
+            type,
+            style: colors[type] || null,
+            text: [...args].join(' ')
+        };
+        logComponent.items = logComponent.items ? [...logComponent.items, item] : [item];
     };
-    // ODA.error = (component, ...args)=>{
-    //     ODA.console( component, console.error, 'red', ...args);
-    // };
-    // ODA.warn = (component, ...args)=>{
-    //     ODA.console(component, console.warn, 'orange', ...args);
-    // };
-    // ODA.success = (component, ...args)=>{
-    //     ODA.console(component, console.log, 'green', ...args);
-    // };
-    // ODA.log = (component, ...args)=>{
-    //     ODA.console(component, console.log, 'gray', ...args);
-    // };
-    // ODA.console = (component = {}, method, color, ...args)=>{
-    //     component = (component && component.localName) || component;
-    //     method(`%c<${component}>`, `color: white; font-weight: bold; background-color: ${color}; padding: 1px 8px; border-radius: 8px`, ...args)
-    // };
+    const _windowOnError = e => {
+        const { message, filename, lineno, colno } = e;
+        ODA.console.error(message, filename, lineno, colno);
+    }
+    ODA.console = window.top.ODA.console || {
+        error: (...args) => _logFunction('error', ...args),
+        warn: (...args) => _logFunction('warn', ...args),
+        success: (...args) => _logFunction('success', ...args),
+        status: (...args) => _logFunction('status', ...args),
+        log: (...args) => _logFunction('log', ...args),
+        _checkErrors: false,
+        start: (filter) => {
+            consoleDecorate(filter);
+            window.addEventListener('error', _windowOnError);
+            ODA.console._checkErrors = true;
+        },
+        stop: () => {
+            consoleUnDecorate();
+            window.removeEventListener('error', _windowOnError);
+            ODA.console._checkErrors = false;
+        },
+        close: () => {
+            const bodyLink = window.top?.document.body || document.body;
+            const consoleLink = bodyLink.querySelector('oda-console');
+            bodyLink.removeChild(consoleLink);
+        }
+    };
+    const __consoleCache = {};
+    const consoleDecorate = filter => {
+        const c = window.console;
+        for (const k in c) {
+            const f = c[k];
+            if (ODA.console[k] && (!filter || (filter && filter.includes(k)))) {
+                __consoleCache[k] = c[k];
+                c[k] = function (...args) {
+                    ODA.console[k](...args);
+                    f(...args);
+                }
+            }
+        }
+    }
+    const consoleUnDecorate = () => {
+        const c = window.console;
+        for (const k in __consoleCache) {
+            c[k] = __consoleCache[k];
+            delete __consoleCache[k];
+        }
+    }
     const cache = {
         fetch: {},
         file: {}
     };
     ODA.loadURL = async function (url) {
+        url = (new URL(url)).href;
+
         if (!cache.fetch[url])
             cache.fetch[url] = fetch(url);
         return cache.fetch[url];
@@ -1926,7 +2053,7 @@ if (!window.ODA) {
             this.rules = {};
             this.root = window.location.pathname.replace(/\/[a-zA-Z]+\.[a-zA-Z]+$/, '/');
             window.addEventListener('popstate', (e) => {
-                this.run((e.state && e.state.path) || '');
+                this.run(e.state?.path || '');
             })
         }
         create(rule, callback) {
@@ -1959,6 +2086,7 @@ if (!window.ODA) {
                     if (path) continue;
                 }
                 else {
+                    if (!(rule.includes('*')) && rule.length !== path.length) continue rules;
                     chars: for (let i = 0, char1, char2; i < rule.length; i++) {
                         char1 = rule[i];
                         char2 = path[i];
@@ -1981,64 +2109,15 @@ if (!window.ODA) {
         back() {
             window.history.back();
         }
+        forward() {
+            window.history.forward();
+        }
     }
     ODA.router = new odaRouter();
     const hooks = ['created', 'ready', 'attached', 'detached', 'updated', 'destroyed'];
-    // ODA.loadScript = async function (url) {
-    //     return ODA.cache('load-script:' + url, ()=>{
-    //         return new Promise(function (resolve, reject) {
-    //             let script = document.createElement("script");
-    //             script.onload = function (e) {
-    //                 globalThis.loader && globalThis.loader.off();
-    //                 resolve(script);
-    //             };
-    //             script.onerror = function (e) {
-    //                 globalThis.loader && globalThis.loader.off();
-    //                 script.remove();
-    //                 script = null;
-    //                 reject(new Error('error on load script', url));
-    //             };
-    //             script.async = true;
-    //             script.type = "text/javascript";
-    //             if (ODA.origin && ODA.origin !== document.location.origin && !url.startsWith(ODA.origin))
-    //                 url = ODA.origin + url;
-    //             script.src = encodeURI(url);
-    //             globalThis.loader && globalThis.loader.on(100);
-    //             document.head.appendChild(script);
-    //         });
-    //     });
-    // };
-    // ODA.loadLink = function (url){
-    //     return ODA.cache('load-link: '+url, ()=>{
-    //         return new Promise((resolve, reject) => {
-    //             const link = document.createElement("link");
-    //             link.addEventListener('load', e=>{
-    //                 resolve(link);
-    //             });
-    //             link.onerror = e => {
-    //                 console.error(e);
-    //                 reject(e);
-    //             };
-    //             link.rel = "import";
-    //             if (ODA.origin && ODA.origin !== document.location.origin && !url.startsWith(ODA.origin))
-    //                 url = ODA.origin + url;
-    //             link.href = url;
-    //             document.head.appendChild(link);
-    //         });
-    //     });
-    // };
-    // function load (){
-    //     document.body.hidden = true;
-    //     const links = Array.prototype.map.call(document.head.querySelectorAll('link[rel=oda-import]'), i=>{
-    //         return ODA.loadLink(i.href);
-    //     });
-    //     Promise.all(links).then(()=>{
-    //         document.body.hidden = false;
-    //     })
-    // }
     const toString = Object.prototype.toString;
     function isNativeObject(obj) {
-        return toString.call(obj) === '[object Object]';
+        return obj && (obj.constructor === Object);// ||  toString.call(c) === '[object Object]';
     }
     function def(obj, key, val, enumerable) {
         Object.defineProperty(obj, key, {
@@ -2068,9 +2147,9 @@ if (!window.ODA) {
                 for (let i = 0; i < path.length; i++) {
                     let key = path[i].toCamelCase();
                     if (i === 0) {
-                        const prop = this.$core.prototype.properties[key];
+                        const prop = this.$core.prototype.props[key];
                         if (prop) {
-                            step = this.$core.data[key] = this.$core.data[key] || {};
+                            step = this[key] = this[key] || {};
                         }
                         else break;
                     }
@@ -2085,19 +2164,15 @@ if (!window.ODA) {
                 }
             }
             else {
-                const prop = this.$core.prototype.properties[name];
+                const prop = this.$core.prototype.props[name];
                 if (prop) {
-                    this.$core.data[name] = v;
+                    this[name] = v;
                     return;
                 }
             }
 
         }
-        if (typeof v === 'object' || this.nodeType !== 1 || (this.$node && this.$node.vars.has(name))) {
-            // if (this.$core){
-            //     this.$core.data[name] = v;
-            //     return;
-            // }
+        if (typeof v === 'object' || this.nodeType !== 1 || this.$node?.vars.has(name)) {
             this[name] = v;
         }
         else {
@@ -2109,9 +2184,9 @@ if (!window.ODA) {
                     this[name] = v;
                 return;
             }
-            if (v === false || v === undefined || v === null || v === '')
+            if (!v && v !== 0)
                 this.removeAttribute(name);
-            else
+            else if (this.getAttribute(name) != v)
                 this.setAttribute(name, v === true ? '' : v);
         }
 
@@ -2127,13 +2202,9 @@ if (!window.ODA) {
     };
     Node.prototype.render = function () {
         if (!this.$wake && (this.$sleep || !this.$node)) return;
-        updateDom.call(this.$domHost, this.$node, this, this.parentNode, this.$for);
+        updateDom.call(this.domHost, this.$node, this, this.parentNode, this.$for);
     };
-    // if (document.body) {
-    //     load();
-    // } else {
-    //     document.addEventListener('DOMContentLoaded', load);
-    // }
+
     class odaEvent {
         constructor(target, handler, ...args) {
             this.handler = handler;
@@ -2144,8 +2215,8 @@ if (!window.ODA) {
             this._events = {};
         }
         static remove(name, target, handler) {
-            const event = target.__listeners && target.__listeners[name] && target.__listeners[name].get(handler);
-            event && event.delete();
+            const event = target.__listeners?.[name]?.get(handler);
+            event?.delete();
         }
         get event() {
             return 'event'
@@ -2251,7 +2322,6 @@ if (!window.ODA) {
         constructor(target, handler, ...args) {
             super(target, handler, ...args);
             this.addSubEvent('mousedown', (e) => {
-                // e.stopPropagation(); //ломает обработку mousedown на всех вложенных элементах
                 this.detail = {
                     state: 'start',
                     start: {
@@ -2288,68 +2358,6 @@ if (!window.ODA) {
             return 'track'
         }
     }
-    if (!Element.prototype.__addEventListener) {
-        const func = Element.prototype.addEventListener;
-        Element.prototype.addEventListener = function (name, handler, ...args) {
-            let event;
-            switch (name) {
-                case 'tap':
-                    event = new odaEventTap(this, handler, ...args);
-                    break;
-                case 'down':
-                    event = new odaEventDown(this, handler, ...args);
-                    break;
-                case 'up':
-                    event = new odaEventUp(this, handler, ...args);
-                    break;
-                case 'track':
-                    event = new odaEventTrack(this, handler, ...args);
-                    break;
-                default:
-                    return func.call(this, name, handler, ...args);
-            }
-            this.__events = this.__events || new Map();
-            let array = this.__events.get(name);
-            if (!array) {
-                array = [];
-                this.__events.set(name, array);
-            }
-            array.push({ handler, event: event });
-            return event;
-        };
-    }
-    if (!Element.prototype.__removeEventListener) {
-        const func = Element.prototype.removeEventListener;
-        Element.prototype.removeEventListener = function (name, handler, ...args) {
-            if (this.__events) {
-                const array = this.__events.get(name) || [];
-                const event = array.find(i => i.handler === handler)
-                if (event) {
-                    odaEvent.remove(name, this, handler);
-                    // event.delete();
-                    // switch (name){
-                    //     case 'tap':
-                    //     case 'down':
-                    //     case 'up':
-                    //     case 'track':{
-                    //         odaEvent.remove(name, this, handler);
-                    //     } break;
-                    //     default:
-                    //
-                    // }
-                    const idx = array.indexOf(event);
-                    if (idx > -1) {
-                        array.splice(idx, 1);
-                    }
-                }
-
-                if (!array.length)
-                    this.__events.delete(name);
-            }
-            func.call(this, name, handler, ...args);
-
-        };
-    }
     ODA._cache = {};
     ODA.cache = (key, callback) => {
         ODA._cache[key] = ODA._cache[key] || ((typeof callback === 'function') ? callback() : callback);
@@ -2375,22 +2383,22 @@ if (!window.ODA) {
     ODA.notify = function (text) {
         ODA.push(text);
     };
-    ODA.push = (name = 'Warning!', { tag = 'message', body, icon = '/web/res/icons/warning.png', image } = {}) => {
+    ODA.push = (title = 'Warning!', { tag = 'message', body, icon = '/web/res/icons/warning.png', image } = {}) => {
         if (!body) {
-            body = name;
-            name = 'Warning!'
+            body = title;
+            title = 'Warning!'
         }
         let params = { tag, body, icon, image };
         switch (Notification.permission.toLowerCase()) {
             case "granted":
-                new Notification(name, params);
+                new Notification(title, params);
                 break;
             case "denied":
                 break;
             case "default":
                 Notification.requestPermission(state => {
                     if (state === "granted")
-                        ODA.push(name, params);
+                        ODA.push(title, params);
                 });
                 break;
         }
@@ -2399,7 +2407,7 @@ if (!window.ODA) {
     ODA.pushError = (error, context) => {
         if (error instanceof Error)
             error = error.stack;
-        const tag = (context && context.displayLabel) || 'Error';
+        const tag = context?.displayLabel || 'Error';
         ODA.push(tag, {
             tag: tag,
             body: error,
@@ -2430,7 +2438,6 @@ if (!window.ODA) {
                     for (let result of results) {
                         const url = new URL(dir + eval(result.groups.name)).href;
                         list.add(url);
-                        // console.log(urlOrId, url)
                     }
                 }).catch(err => {
 
@@ -2443,7 +2450,7 @@ if (!window.ODA) {
     };
     ODA.getDirInfo = async function (url) {
         let res;
-        if (!ODA.localDirs) {
+        if (window.location.hostname !== 'localhost') {
             try {
                 res = await ODA.loadJSON(url.replace('/web/oda/', '/api/web/oda/') + '?get_dirlist');
             }
@@ -2465,7 +2472,7 @@ if (!window.ODA) {
     }
     window.ODARect = window.ODARect || class ODARect {
         constructor(element) {
-            if (element && element.host)
+            if (element?.host)
                 element = element.host;
             const pos = element ? element.getBoundingClientRect() : ODA.mousePos;
             this.x = pos.x;
@@ -2505,7 +2512,7 @@ if (!window.ODA) {
                 ODA.dictionary = {};
             }
             for (let el of document.body.children)
-                el.render && el.render();
+                el.render?.();
         },
         get() {
             return ODA._language;
@@ -2542,490 +2549,22 @@ if (!window.ODA) {
         }
     }, true)
 
-    ODA.onKeyPress = function (keys, callbck) {
+    ODA.onKeyPress = function (keys, callback) {
         keys = keys.toLowerCase();
         for (let key of keys.split(',')) {
             const calls = keyPressMap[key] || [];
-            calls.add(callbck)
+            calls.add(callback)
             keyPressMap[key] = calls;
         }
     }
 
     window.addEventListener('load', async () => {
+        document.frameworkIsReady = true;
         document.oncontextmenu = (e) => {
             e.target.dispatchEvent(new MouseEvent('menu', e));
             return false;
         };
-        document.frameworkIsReady = true;
-        ODA({
-            is: 'oda-style', template: /*html*/`
-        <style scope="oda" group="layouts">
-            :root{
-                --font-family: Roboto, Noto, sans-serif;
-                --bar-background: white;
-                --stroke-color: transparent;
-                --content-background: white;
-                --content-color: black;
-                --header-color: black;
-                --border-color: darkslategray;
-                --border-radius: 0px;
-
-                --body-background: transparent;
-                --body-color: #555555;
-                --header-background: silver;
-
-
-                --section-background: lightgrey;
-                --section-color: black;
-
-                --layout-background: whitesmoke;
-                --layout-color: black;
-
-                --content:{
-                    background-color: var(--content-background, white);
-                    color: var(--content-color, black);
-                };
-                --font-150:{
-                    font-size: 150%;
-                };
-                --horizontal: {
-                    display: flex;
-                    flex-direction: row;
-                };
-                --horizontal-center:{
-                    @apply --horizontal;
-                    align-items: center;
-                };
-                --h:{
-                    @apply --horizontal;
-                };
-                --horizontal-end:{
-                    @apply --horizontal;
-                    justify-content: flex-end;
-                };
-                --bold:{
-                    font-weight: bold;
-                };
-                --between:{
-                    justify-content: space-between;
-                };
-                --flex:{
-                    flex: 1;
-                    flex-basis: auto;
-                };
-
-                --no-flex: {
-                    flex-grow: 0;
-                    flex-shrink: 0;
-                    flex-basis: auto;
-                };
-                --bar:{
-                    @apply --horizontal;
-                };
-                --center:{
-                    justify-content: center;
-                    align-self: center;
-                    align-content: center;
-                };
-                --vertical: {
-                    display: flex;
-                    flex-direction: column;
-                };
-                --border:{
-                    border: 1px solid;
-                };
-
-                --toolbar:{
-                    @apply --horizontal;
-                    align-items: center;
-                };
-                --header: {
-                    background: var(--header-background);
-                    color: var(--header-color);
-                    fill: var(--header-color);
-                };
-                --layout: {
-                    background: var(--layout-background);
-                    color: var(--layout-color);
-                    fill: var(--layout-color);
-                };
-                --footer: {
-                    @apply --header;
-                };
-                --border: {
-                    border: 1px solid var(--border-color, darkslategray);
-                    border-radius: var(--border-radius);
-                };
-                --border-left: {
-                    border-left: 1px solid var(--border-color, darkslategray);
-                };
-                --border-top: {
-                    border-top: 1px solid var(--border-color, darkslategray);
-                };
-                --border-right: {
-                    border-right: 1px solid var(--border-color, darkslategray);
-                };
-                --border-bottom: {
-                    border-bottom: 1px solid var(--border-color, darkslategray);
-                };
-                --label: {
-                    white-space: nowrap;
-                    align-content: center;
-                    text-overflow: ellipsis;
-                    font-family: var(--font-family);
-                    overflow: hidden;
-                    padding: 0px 4px;
-                };
-
-                --cover:{
-                    position: fixed;
-                    left: 0px;
-                    top: 0px;
-                    width: 100%;
-                    height: 100%;
-                    background-color: rgba(0,0,0,.1);
-                    z-index: 1000;
-                };
-                --user-select:{
-                    user-select: text !important;
-                }
-            };
-            ::-webkit-scrollbar {
-                width: 12px;
-                height: 12px;
-            }
-            ::-webkit-scrollbar-track {
-                -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,0.3);
-
-            }
-            ::-webkit-scrollbar-thumb {
-                border-radius: 10px;
-                background: var(--body-background);
-
-                -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,0.5);
-            }
-            html {
-                -ms-text-size-adjust: 100%;
-                -webkit-text-size-adjust: 100%;
-                height: 100%;
-                --my-variable: 100px;
-            }
-            ::part{
-                min-width: 0px;
-            }
-            ::part(error){
-                position: relative;
-                overflow: visible;
-                min-height: 20px;
-                min-width: 20px;
-            }
-            ::part(error):before{
-                content: '';
-                position: absolute;
-                top: 0px;
-                left: 0px;
-                width: 0px;
-                height: 0px;
-                border: 4px solid transparent;
-                border-left: 4px solid red;
-                border-top: 4px solid red;
-            }
-            body{
-                display: flex;
-                flex: 1;
-                animation: fadeIn .5s;
-                flex-direction: column;
-                font-family: var(--font-family);
-                user-select: none;
-                margin: 0px;
-                padding: 0px;
-                height: 100%;
-                background: var(--body-background);
-                color: var(--body-color, #555555);
-                fill: var(--body-color, #555555);
-                stroke: var(--stroke-color, transparent);
-            }
-        </style>
-        <style scope="oda" group="shadow">
-            :root {
-                --box-shadow: 0 8px 10px 1px rgba(0, 0, 0, 0.14), 0 3px 14px 2px rgba(0, 0, 0, 0.12), 0 5px 5px -3px rgba(0, 0, 0, 0.2);
-                --shadow: {
-                    box-shadow: var(--box-shadow);
-                };
-
-                --shadow-transition: {
-                    transition: box-shadow 0.28s cubic-bezier(0.4, 0, 0.2, 1);
-                };
-
-                --text-shadow: {
-                    text-shadow: 0 1px 1px rgba(255, 255, 255, 0.75);
-                };
-
-                --text-shadow-black: {
-                    text-shadow: 0 1px 1px black;
-                };
-                --raised:{
-                    box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.14), 0 1px 5px 0 rgba(0, 0, 0, 0.12), 0 3px 1px -2px rgba(0, 0, 0, 0.2);
-                };
-            }
-            body[context-menu-show] *:not(oda-context-menu){
-                pointer-events: none;
-            }
-        </style>
-        <style scope="oda" group="special">
-            :root {
-                --success-color: green;
-                --error-color: red;
-                --info-color: blueviolet;
-                --warning-color: orange;
-                --invert:{
-                    color: var(--layout-background) !important;
-                    border-color: var(--layout-background) !important;
-                    fill: var(--layout-background) !important;
-                    background: var(--layout-color) !important;
-                };
-                --error: {
-                    color: var(--error-color) !important;
-                    border-color: var(--error-color) !important;
-                    fill: var(--error-color) !important;
-
-                };
-                --error-invert: {
-                    @apply --invert;
-                    background: var(--error-color) !important;
-                };
-
-                --success: {
-                    color: var(--success-color) !important;
-                    fill: var(--success-color) !important;
-                    border-color: var(--success-color) !important;
-                };
-                --success-invert: {
-                    @apply --invert;
-                    background: var(--success-color) !important;
-                };
-
-                --info: {
-                    color: var(--info-color) !important;
-                    fill: var(--info-color) !important;
-                    border-color: var(--info-color) !important;
-                };
-                --info-invert: {
-                    @apply --invert;
-                    background: var(--info-color) !important;
-                };
-
-                --warning: {
-                    color: var(--warning-color)  !important;
-                    fill: var(--warning-color) !important;
-                    border-color: var(--warning-color) !important;
-                };
-
-                --warning-invert: {
-                    @apply --invert;
-                    background: var(--warning-color) !important;
-                };
-            }
-        </style>
-        <style scope="oda" group="effects">
-            :root{
-                --focused-color: blue;
-                --selected-color: navy;
-                --selected-background: silver;
-                --dark-color: white;
-                --dark-background: gray;
-                --dark: {
-                    color: var(--dark-color) !important;
-                    background-color: var(--dark-background) !important;
-                };
-
-                --active: {
-                    color: var(--selected-color) !important;
-                    background-color: var(--selected-background) !important;
-                };
-                --selected: {
-                    /*filter: brightness(90%);*/
-                    color: var(--selected-color) !important;
-                    filter: brightness(0.8) contrast(1.2);
-                    /*background-color: var(--selected-background) !important;*/
-                    /* background: linear-gradient(var(--selected-background), var(--content-background), var(--selected-background))  !important; */
-                };
-                --focused:{
-                    /*outline: 2px solid var(--focused-color) !important;*/
-                    /*background-color: whitesmoke !important;*/
-                    /*color: var(--focused-color, red) !important;*/
-                    box-shadow: inset 0 -2px 0 0  var(--focused-color)!important;
-                    /*border-bottom: 2px solid var(--focused-color) !important;*/
-                    /*box-sizing: border-box;*/
-                    /*filter: brightness(.9) contrast(1);*/
-                };
-                --disabled: {
-                    cursor: default !important;
-                    opacity: 0.4;
-                    user-focus: none;
-                    user-focus-key: none;
-                    user-select: none;
-                    user-input: none;
-                    pointer-events: none;
-                    filter: grayscale(80%);
-                };
-            }
-        </style>
-        <style scope="oda">
-            @keyframes blinker {
-                100% {
-                    opacity: 0;
-                }
-            }
-            @-webkit-keyframes blinker {
-                100% {
-                    opacity: 0;
-                }
-            }
-
-            @keyframes zoom-in {
-                from {transform:scale(0)}
-                to {transform:scale(1)}
-            }
-            @keyframes zoom-out {
-                from {transform:scale(1)}
-                to {transform:scale(0)}
-            }
-
-            @keyframes fadeIn {
-                from {
-                    opacity: 0;
-                }
-                to {
-                    opacity: 1;
-                }
-            }
-
-            @-moz-keyframes fadeIn {
-                from {
-                    opacity: 0;
-                }
-                to {
-                    opacity: 1;
-                }
-            }
-
-            @keyframes fadeOut {
-                from {
-                    opacity: 1;
-                }
-                to {
-                    opacity: 0;
-                }
-            }
-
-            @-moz-keyframes fadeOut {
-                from {
-                    opacity: 1;
-                }
-                to {
-                    opacity: 0;
-                }
-            }
-        </style>
-        <style group="theme"></style>`,
-            properties: {
-                styles: {
-                    type: Object,
-                    freeze: true
-                },
-                theme: {
-                    default: {},
-                    freeze: true,
-                    set(n, o) {
-                        for (let node of this.$core.data.nodes)
-                            node.textContent = this.convert(node);
-                        document.querySelector('style[group=theme]').textContent = `\n:root{\n${Object.keys(n).map(key => '\t' + key + ': ' + n[key] + ';\n').join('')}}`;
-                        let event = new CustomEvent('setTheme', { detail: { value: document.querySelector('style[group=theme]').textContent }, composed: true });
-                        document.dispatchEvent(event);
-                    }
-                },
-                nodes: {
-                    default: [],
-                    freeze: true
-                }
-            },
-            ready() {
-                this.elements = Array.from(this.$core.shadowRoot.children);
-                const styles = {};
-                for (let style of this.elements) {
-                    document.head.appendChild(style);
-                    for (let i of style.sheet.cssRules) {
-                        if (i.style) {
-                            for (let key of i.style) {
-                                let val = i.style.getPropertyValue(key);
-                                if (!/^--/.test(key)) continue;
-                                val = val.toString().trim().replace(/^{|}$/g, '').trim().split(';').join(';');
-                                styles[key] = val;
-                            }
-                        }
-                    }
-                }
-                const proxy = new Proxy(styles, {
-                    get: (target, p, receiver) => {
-                        let val = target[p];
-                        if (typeof val === 'string') {
-                            let theme = this.$core.data.theme[p];
-                            if (theme)
-                                return theme;
-
-                            applyStyleMixins(val, this.$core.data.styles);
-                            // for (let v of (val.match(regExpApply) || [])){
-                            //     let rule = this.$core.data.styles[v];
-                            //     val = val.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
-                            // }
-                        }
-                        return val;
-                    },
-                    set: (target, p, value, receiver) => {
-                        target[p] = value;
-                        return true;
-                    }
-                });
-                const options = { proxy, main: this };
-                options.hosts = new Map();
-                options.hosts.set(this, proxy);
-                Object.defineProperty(styles, '__op__', {
-                    enumerable: false,
-                    configurable: true,
-                    value: options
-                });
-                this.styles = proxy;
-            },
-            convert(node, style) {
-                node.style = style || node.style || node.textContent;
-                this.$core.data.nodes.add(node);
-                let res = node.style;
-                if (!res) return res;
-                applyStyleMixins(res, this.$core.data.styles);
-                // for (let v of (res.match(regExpApply) || [])){
-                //     let rule = this.$core.data.styles[v];
-                //     if(rule)
-                //         res = res.replace(new RegExp(`@apply\\s+${v}\s?;`, 'g'), rule);
-                // }
-                return res;
-            },
-            update(updates = {}) {
-                if (Object.keys(updates).length === 0)
-                    this.$core.data.theme = updates;
-                else
-                    this.$core.data.theme = Object.assign({}, this.$core.data.theme, updates);
-            }
-        });
-
-        ODA.style = document.createElement('oda-style');
-
-        // import('./tools/languages/editor/dictionary-editor.js').then(() => {
-        //     console.log('dictionary-editor is loaded')
-        // });
-        // import('./tools/console/console.js').then(() => {
-        //     ODA.console = ODA.createComponent('oda-console');
-        // });
+        await import('./styles.js');
         ODA.containerStack = [];
         ODA.getDirInfo(ODA.$dir + '/tools/containers').then(res => {
             ODA.$containers = (res.$DIR || []).map(i => i.name);
@@ -3057,7 +2596,6 @@ if (!window.ODA) {
                         return await new Promise((resolve, reject) => {
                             this.keyboardEvent = e => {
                                 if (e.keyCode === 27) {
-                                    //reject();
                                     while (ODA.containerStack.length)
                                         ODA.containerStack.pop().fire('cancel');
                                 }
@@ -3076,7 +2614,6 @@ if (!window.ODA) {
                                         if (el === host) return;
                                         el = el.parentElement;
                                     }
-                                    //reject();
                                     while (ODA.containerStack.length)
                                         ODA.containerStack.pop().fire('cancel');
                                 }
@@ -3088,14 +2625,19 @@ if (!window.ODA) {
                             host.addEventListener('cancel', this.cancelEvent);
                             host.addEventListener('ok', this.okEvent);
                             window.addEventListener('keydown', this.keyboardEvent, true);
-                            document.addEventListener('mousedown', this.mouseEvent, true);
+                            // document.addEventListener('mousedown', this.mouseEvent, true);
+                            const windows = [...Array.prototype.map.call(window.top, w => w), window];
+                            if (window !== window.top) windows.push(window.top);
+                            windows.forEach( w =>{
+                                w.document.addEventListener('mousedown', this.mouseEvent, true);
+                            });
                         })
                     }
                     catch (e) {
-                        return undefined
+                        console.warn(e);
+                        return Promise.reject();
                     }
                     finally {
-                        ODA.containerStack.remove(host);
                         if (ctrl.slotProxy) {
                             ctrl.slot = ctrl.slotProxy.$slot;
                             ctrl.slotProxy.parentElement.replaceChild(ctrl, ctrl.slotProxy);
@@ -3103,22 +2645,141 @@ if (!window.ODA) {
                         host.removeEventListener('cancel', this.cancelEvent);
                         host.removeEventListener('ok', this.okEvent);
                         window.removeEventListener('keydown', this.keyboardEvent, true);
-                        document.removeEventListener('mousedown', this.mouseEvent, true);
+                        // document.removeEventListener('mousedown', this.mouseEvent, true);
+                        const windows = [...Array.prototype.map.call(window.top, w => w), window];
+                        if (window !== window.top) windows.push(window.top);
+                        windows.forEach(w => {
+                            w.document.removeEventListener('mousedown', this.mouseEvent, true);
+                        });
                         host.remove();
                     }
                 }
             }
         })
 
+        const hotKeys = {
+            'ctrl+m': { import: './tools/monitor/monitor.js', component: 'oda-monitor' },
+            'alt+t': { import: './tools/console/console.js', component: 'oda-console' }
+        }
+        document.addEventListener('keydown', _hotKeys);
+        async function _hotKeys(e) {
+            if (!e.code.startsWith('Key')) return;
+            let key = (e.ctrlKey ? 'ctrl+' : '') + (e.altKey ? 'alt+' : '') + (e.shiftKey ? 'shift+' : '') + e.code.replace('Key', '').toLowerCase();
+            const obj = hotKeys[key], doc = window.top.document;
+            if (!obj) return;
+            if (obj.import && obj.component) {
+                obj.done = doc.body.querySelector(obj.component) || null;
+                if (obj.done) {
+                    doc.body.removeChild(obj.done);
+                    obj.done = null;
+                } else {
+                    await import(obj.import);
+                    obj.done = ODA.createComponent(obj.component);
+                    doc.body.appendChild(obj.done);
+                }
+            }
+        }
 
         document.dispatchEvent(new Event('framework-ready'));
-        if (document.body.firstElementChild && document.body.firstElementChild.tagName === 'ODA-TESTER') {
-            document.body.style.display = 'none';
-            import('./tools/tester/tester.js').then(() => {
-                document.body.style.display = '';
-            });
+        if (document.body.firstElementChild) {
+            if (document.body.firstElementChild.tagName === 'ODA-TESTER') {
+                document.body.style.display = 'none';
+                import('./tools/tester/tester.js').then(() => {
+                    document.body.style.display = '';
+                });
+            }
+            document.title = document.title || (document.body.firstElementChild.label || document.body.firstElementChild.name || document.body.firstElementChild.localName);
         }
     });
+    function toBool(v, def = false) {
+        if (!v)
+            return def;
+        switch (typeof v) {
+            case 'object': return true;
+            case 'string': return v.toLowerCase() === 'true';
+            case 'boolean': return v;
+            case 'number': return v !== 0;
+        }
+        return false;
+    }
+    function toType(type, value) {
+        switch (type) {
+            case Boolean: return toBool(value);
+            case Number: return parseFloat(value) || 0;
+            case String: return value?.toString() || '';
+            case Date: return Date.parse(value) || new Date(value)
+            default: return value;
+        }
+    }
+    Element.prototype.getClientRect = function (host) {
+        let rect = this.getBoundingClientRect();
+        if (host){
+            const rectHost = host.getBoundingClientRect?.() || host;
+            const res = {x: 0, y: 0, top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0};
+            for (let n in res)
+                res[n] = rect[n];
+            res.x -= rectHost.x || 0;
+            res.y -= rectHost.y || 0;
+            res.top -= rectHost.top || 0;
+            res.left -= rectHost.left || 0;
+            res.bottom -= rectHost.top || 0;
+            res.right -= rectHost.left || 0;
+            rect = res;
+            rect.host = host;
+        }
+        return rect;
+    }
 
+    if (!Element.prototype.__addEventListener) {
+        const func = Element.prototype.addEventListener;
+        Element.prototype.addEventListener = function (name, handler, ...args) {
+            let event;
+            switch (name) {
+                case 'tap':
+                    event = new odaEventTap(this, handler, ...args);
+                    break;
+                case 'down':
+                    event = new odaEventDown(this, handler, ...args);
+                    break;
+                case 'up':
+                    event = new odaEventUp(this, handler, ...args);
+                    break;
+                case 'track':
+                    event = new odaEventTrack(this, handler, ...args);
+                    break;
+                default:
+                    event = func.call(this, name, handler, ...args);
+                    break;
+            }
+            this.__events = this.__events || new Map();
+            let array = this.__events.get(name);
+            if (!array) {
+                array = [];
+                this.__events.set(name, array);
+            }
+            array.push({ handler, event: event });
+            return event;
+        };
+    }
+    if (!Element.prototype.__removeEventListener) {
+        const func = Element.prototype.removeEventListener;
+        Element.prototype.removeEventListener = function (name, handler, ...args) {
+            if (this.__events) {
+                const array = this.__events.get(name) || [];
+                const event = array.find(i => i.handler === handler)
+                if (event) {
+                    odaEvent.remove(name, this, handler);
+                    const idx = array.indexOf(event);
+                    if (idx > -1) {
+                        array.splice(idx, 1);
+                    }
+                }
+
+                if (!array.length)
+                    this.__events.delete(name);
+            }
+            func.call(this, name, handler, ...args);
+        };
+    }
 }
 export default ODA;
